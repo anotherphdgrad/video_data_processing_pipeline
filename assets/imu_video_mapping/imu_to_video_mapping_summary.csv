@@ -1,0 +1,9 @@
+metric,value
+num_imu_files,78
+num_approved_mapped_imu_files,78
+num_missing_approved_mapping,0
+num_session_manifest_rows,120
+num_unique_imu_with_session_rows,78
+num_missing_report_rows,0
+num_depth_missing_rows,0
+num_rgb_missing_rows,0

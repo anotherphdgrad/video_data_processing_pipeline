@@ -1,0 +1,78 @@
+participant_id,group,proposed_imu_stem,match_type,confidence,notes,approved
+1,Control,0001,numeric_exact,high,numeric participant_id matched IMU stem,true
+10,Control,0010,numeric_exact,high,numeric participant_id matched IMU stem,true
+11,Control,0011,numeric_exact,high,numeric participant_id matched IMU stem,true
+12,Control,0012,numeric_exact,high,numeric participant_id matched IMU stem,true
+13,Control,0013,numeric_exact,high,numeric participant_id matched IMU stem,true
+14,Control,0014,numeric_exact,high,numeric participant_id matched IMU stem,true
+15,Control,0015,numeric_exact,high,numeric participant_id matched IMU stem,true
+16,Control,0016,numeric_exact,high,numeric participant_id matched IMU stem,true
+2,Control,0002,numeric_exact,high,numeric participant_id matched IMU stem,true
+3,Control,0003,numeric_exact,high,numeric participant_id matched IMU stem,true
+4,Control,0004,numeric_exact,high,numeric participant_id matched IMU stem,true
+5,Control,0005,numeric_exact,high,numeric participant_id matched IMU stem,true
+6,Control,0006,numeric_exact,high,numeric participant_id matched IMU stem,true
+7,Control,0007,numeric_exact,high,numeric participant_id matched IMU stem,true
+8,Control,0008,numeric_exact,high,numeric participant_id matched IMU stem,true
+9,Control,0009,numeric_exact,high,numeric participant_id matched IMU stem,true
+avery,Control,avery,exact,high,direct exact participant_id -> imu stem match,true
+brian,Control,brian,exact,high,direct exact participant_id -> imu stem match,true
+carolyn,Control,carolyn,exact,high,direct exact participant_id -> imu stem match,true
+christine,Control,christine,exact,high,direct exact participant_id -> imu stem match,true
+colleen,Control,colleen,exact,high,direct exact participant_id -> imu stem match,true
+coung,Control,coung,exact,high,direct exact participant_id -> imu stem match,true
+emily,Control,emily,exact,high,direct exact participant_id -> imu stem match,true
+gabrielle,Control,gabrielle,exact,high,direct exact participant_id -> imu stem match,true
+georgie,Control,georgie,exact,high,direct exact participant_id -> imu stem match,true
+hannah,Control,hannah,exact,high,direct exact participant_id -> imu stem match,true
+huaiyu,Control,huaiyu,exact,high,direct exact participant_id -> imu stem match,true
+jingyu,Control,jingyu,exact,high,direct exact participant_id -> imu stem match,true
+jordan,Control,jordan,exact,high,direct exact participant_id -> imu stem match,true
+joshua,Control,joshua,exact,high,direct exact participant_id -> imu stem match,true
+kaite,Control,kaite,exact,high,direct exact participant_id -> imu stem match,true
+kara8,Control,kara8,exact,high,direct exact participant_id -> imu stem match,true
+kirat,Control,kirat,exact,high,direct exact participant_id -> imu stem match,true
+lohith7,Control,lohith7,exact,high,direct exact participant_id -> imu stem match,true
+lorn,Control,lorn,exact,high,direct exact participant_id -> imu stem match,true
+lydia7,Control,lydia7,exact,high,direct exact participant_id -> imu stem match,true
+missy,Control,missy,exact,high,direct exact participant_id -> imu stem match,true
+moira2,Control,moira2,exact,high,direct exact participant_id -> imu stem match,true
+ruipeng,Control,ruipeng,exact,high,direct exact participant_id -> imu stem match,true
+sawin,Control,sawin,exact,high,direct exact participant_id -> imu stem match,true
+shaily5,Control,shaily5,exact,high,direct exact participant_id -> imu stem match,true
+shocky,Control,shocky,exact,high,direct exact participant_id -> imu stem match,true
+susan8,Control,susan8,exact,high,direct exact participant_id -> imu stem match,true
+tabitha5,Control,tabitha5,exact,high,direct exact participant_id -> imu stem match,true
+timothy,Control,timothy,exact,high,direct exact participant_id -> imu stem match,true
+vicki,Control,vicki,exact,high,direct exact participant_id -> imu stem match,true
+yue,Control,yue,exact,high,direct exact participant_id -> imu stem match,true
+yuhsun,Control,yuhsun,exact,high,direct exact participant_id -> imu stem match,true
+yuxuan,Control,yuxuan,exact,high,direct exact participant_id -> imu stem match,true
+8803,OUD,8803,numeric_exact,high,numeric participant_id matched IMU stem,true
+8804,OUD,8804,numeric_exact,high,numeric participant_id matched IMU stem,true
+8814,OUD,8814,numeric_exact,high,numeric participant_id matched IMU stem,true
+8829,OUD,8829,numeric_exact,high,numeric participant_id matched IMU stem,true
+8832,OUD,8832,numeric_exact,high,numeric participant_id matched IMU stem,true
+8840,OUD,8840,numeric_exact,high,numeric participant_id matched IMU stem,true
+8847,OUD,8847,numeric_exact,high,numeric participant_id matched IMU stem,true
+8852,OUD,8852,numeric_exact,high,numeric participant_id matched IMU stem,true
+8898,OUD,8898,numeric_exact,high,numeric participant_id matched IMU stem,true
+9913,OUD,9913,numeric_exact,high,numeric participant_id matched IMU stem,true
+9915,OUD,9915,numeric_exact,high,numeric participant_id matched IMU stem,true
+9915v2,OUD,9915v2,exact,high,direct exact participant_id -> imu stem match,true
+9925,OUD,9925,numeric_exact,high,numeric participant_id matched IMU stem,true
+9929,OUD,9929,numeric_exact,high,numeric participant_id matched IMU stem,true
+9933,OUD,9933,numeric_exact,high,numeric participant_id matched IMU stem,true
+9941,OUD,9941,numeric_exact,high,numeric participant_id matched IMU stem,true
+9945,OUD,9945,numeric_exact,high,numeric participant_id matched IMU stem,true
+9945v2,OUD,9945v2,exact,high,direct exact participant_id -> imu stem match,true
+9948,OUD,9948,numeric_exact,high,numeric participant_id matched IMU stem,true
+9952,OUD,9952,numeric_exact,high,numeric participant_id matched IMU stem,true
+9956,OUD,9956,numeric_exact,high,numeric participant_id matched IMU stem,true
+9967,OUD,9967,numeric_exact,high,numeric participant_id matched IMU stem,true
+9969,OUD,9969,numeric_exact,high,numeric participant_id matched IMU stem,true
+9973,OUD,9973,numeric_exact,high,numeric participant_id matched IMU stem,true
+9973v2,OUD,9973v2,exact,high,direct exact participant_id -> imu stem match,true
+9984,OUD,9984,numeric_exact,high,numeric participant_id matched IMU stem,true
+9991,OUD,9991,numeric_exact,high,numeric participant_id matched IMU stem,true
+xianfei,OUD,8804,timestamp_hint,low,nearest first IMU timestamp 1687868638.0 differs from audio_start_ts by 1929735.8s; manual review required,False
