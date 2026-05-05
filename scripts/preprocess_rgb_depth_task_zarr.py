@@ -113,6 +113,17 @@ def read_timestamps(h5_file: h5py.File, explicit_name: str | None) -> tuple[str,
     return f"{dataset_name}|{timestamp_units}", timestamps
 
 
+def read_timestamps_cached(
+    timestamp_cache: dict[tuple[str, str | None], tuple[str, np.ndarray]],
+    h5_file: h5py.File,
+    explicit_name: str | None,
+) -> tuple[str, np.ndarray]:
+    cache_key = (h5_file.filename, explicit_name)
+    if cache_key not in timestamp_cache:
+        timestamp_cache[cache_key] = read_timestamps(h5_file, explicit_name)
+    return timestamp_cache[cache_key]
+
+
 def normalize_timestamp_units(timestamps: np.ndarray) -> tuple[np.ndarray, str]:
     """Return timestamps in epoch seconds to match IMU-derived task times."""
     timestamps = np.asarray(timestamps, dtype=np.float64)
@@ -286,6 +297,7 @@ def main() -> None:
     compressor = Blosc(cname=args.compressor, clevel=int(args.compression_level), shuffle=Blosc.BITSHUFFLE)
     metadata_rows: list[dict] = []
     skipped_rows: list[dict] = []
+    timestamp_cache: dict[tuple[str, str | None], tuple[str, np.ndarray]] = {}
     manifest_records = list(manifest_df.reset_index(drop=True).iterrows())
     iterator = manifest_records
     if not args.no_progress:
@@ -307,8 +319,16 @@ def main() -> None:
             with h5py.File(depth_path, "r") as depth_h5, h5py.File(rgb_path, "r") as rgb_h5:
                 depth_image_name = find_h5_dataset(depth_h5, args.image_dataset, IMAGE_DATASET_CANDIDATES)
                 rgb_image_name = find_h5_dataset(rgb_h5, args.image_dataset, IMAGE_DATASET_CANDIDATES)
-                depth_ts_name, depth_timestamps = read_timestamps(depth_h5, args.timestamp_dataset)
-                rgb_ts_name, rgb_timestamps = read_timestamps(rgb_h5, args.timestamp_dataset)
+                depth_ts_name, depth_timestamps = read_timestamps_cached(
+                    timestamp_cache,
+                    depth_h5,
+                    args.timestamp_dataset,
+                )
+                rgb_ts_name, rgb_timestamps = read_timestamps_cached(
+                    timestamp_cache,
+                    rgb_h5,
+                    args.timestamp_dataset,
+                )
 
                 target_times = np.arange(
                     float(row["imu_task_start_ts"]),
