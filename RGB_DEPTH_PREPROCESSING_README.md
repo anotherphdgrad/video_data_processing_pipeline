@@ -776,6 +776,12 @@ The launcher regenerates the session manifest with HPC roots:
 - depth: `/scratch/hsharm62/OUD_Stress_depth/depth_hdf5`
 - RGB: `/scratch/hsharm62/OUD_Stress_RGB/rgb_hdf5`
 
+Important timestamp note:
+
+- RGB/depth H5 timestamps are normalized from epoch milliseconds to epoch seconds before matching IMU task intervals.
+- If `rgb_depth_task_frame_manifest.csv` was generated before this patch, regenerate it before running Zarr extraction.
+- Any Zarr output generated from an old task-frame manifest should also be regenerated.
+
 It writes HPC-specific mapping outputs by default to:
 
 - `assets/imu_video_mapping_hpc/imu_to_video_session_manifest.csv`

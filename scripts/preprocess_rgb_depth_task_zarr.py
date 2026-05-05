@@ -109,7 +109,20 @@ def find_h5_dataset(h5_file: h5py.File, explicit_name: str | None, candidates: I
 
 def read_timestamps(h5_file: h5py.File, explicit_name: str | None) -> tuple[str, np.ndarray]:
     dataset_name = find_h5_dataset(h5_file, explicit_name, TIMESTAMP_DATASET_CANDIDATES)
-    return dataset_name, np.asarray(h5_file[dataset_name][:], dtype=np.float64)
+    timestamps, timestamp_units = normalize_timestamp_units(np.asarray(h5_file[dataset_name][:], dtype=np.float64))
+    return f"{dataset_name}|{timestamp_units}", timestamps
+
+
+def normalize_timestamp_units(timestamps: np.ndarray) -> tuple[np.ndarray, str]:
+    """Return timestamps in epoch seconds to match IMU-derived task times."""
+    timestamps = np.asarray(timestamps, dtype=np.float64)
+    finite = timestamps[np.isfinite(timestamps)]
+    if finite.size == 0:
+        return timestamps, "unknown"
+    median_abs = float(np.median(np.abs(finite)))
+    if median_abs > 1e11:
+        return timestamps / 1000.0, "milliseconds"
+    return timestamps, "seconds"
 
 
 def nearest_indices(

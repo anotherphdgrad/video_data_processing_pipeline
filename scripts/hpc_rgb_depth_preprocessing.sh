@@ -73,6 +73,8 @@ echo "SHARD_INDEX=${SHARD_INDEX}"
 echo "SHARD_BY=${SHARD_BY}"
 echo "LOCAL_ZARR_WORKERS=${LOCAL_ZARR_WORKERS}"
 echo "CPU_THREADS_PER_WORKER=${CPU_THREADS_PER_WORKER}"
+echo "NOTE: H5 timestamps are normalized to epoch seconds in task-frame and Zarr scripts."
+echo "NOTE: Regenerate ${TASK_FRAME_MANIFEST} before reusing Zarr output if it was created before this timestamp-unit patch."
 
 common_participant_args=()
 if [[ -n "${PARTICIPANTS}" ]]; then

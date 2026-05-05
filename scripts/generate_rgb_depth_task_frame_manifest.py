@@ -90,15 +90,32 @@ def find_h5_dataset(h5_file: h5py.File, explicit_name: str | None, candidates: I
     )
 
 
+def normalize_timestamp_units(timestamps: np.ndarray) -> tuple[np.ndarray, str]:
+    """Return timestamps in epoch seconds.
+
+    The IMU CSVs use epoch seconds, while the RGB/depth H5 files observed so far
+    store epoch milliseconds.
+    """
+    timestamps = np.asarray(timestamps, dtype=np.float64)
+    finite = timestamps[np.isfinite(timestamps)]
+    if finite.size == 0:
+        return timestamps, "unknown"
+    median_abs = float(np.median(np.abs(finite)))
+    if median_abs > 1e11:
+        return timestamps / 1000.0, "milliseconds"
+    return timestamps, "seconds"
+
+
 def read_timestamps(path: Path, timestamp_dataset: str | None) -> tuple[np.ndarray | None, str | None, str | None]:
     try:
         with h5py.File(path, "r") as h5_file:
             dataset_name = find_h5_dataset(h5_file, timestamp_dataset, TIMESTAMP_DATASET_CANDIDATES)
             timestamps = np.asarray(h5_file[dataset_name][:], dtype=np.float64)
+        timestamps, timestamp_units = normalize_timestamp_units(timestamps)
         timestamps = timestamps[np.isfinite(timestamps)]
         if timestamps.size == 0:
             return None, dataset_name, "timestamp_dataset_empty"
-        return timestamps, dataset_name, None
+        return timestamps, f"{dataset_name}|{timestamp_units}", None
     except Exception as exc:  # noqa: BLE001 - this is an inspection/reporting script.
         return None, None, f"{type(exc).__name__}: {exc}"
 
