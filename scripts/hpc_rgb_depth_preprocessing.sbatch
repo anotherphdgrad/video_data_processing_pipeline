@@ -6,13 +6,18 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 
-# Optional SLURM wrapper. Edit partition/account/GPU directives here if your
-# cluster requires them, then submit with:
+# Optional SLURM wrapper. Submit this only from an environment where the needed
+# conda env is already active. Edit partition/account/GPU directives here if
+# your cluster requires them, then submit with:
 #   sbatch scripts/hpc_rgb_depth_preprocessing.sbatch
 
 set -euo pipefail
 
-PROJECT_ROOT="${PROJECT_ROOT:-/home/harshit/2024/video_data_processing_pipeline}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="${PROJECT_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+if [[ ! -d "${PROJECT_ROOT}" ]]; then
+  PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+fi
 mkdir -p "${PROJECT_ROOT}/logs"
 
 export PROJECT_ROOT

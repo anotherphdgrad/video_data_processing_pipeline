@@ -3,12 +3,18 @@
 #
 # This script rebuilds all RGB/depth paths from H5 filenames plus the HPC
 # /scratch roots, then generates the task/frame manifest and optional Zarr data.
+# Launch this from a conda environment that already has the required Python
+# dependencies available.
 
 set -euo pipefail
 
-PROJECT_ROOT="${PROJECT_ROOT:-/home/harshit/2024/video_data_processing_pipeline}"
-CONDA_SH="${CONDA_SH:-/home/harshit/anaconda3/etc/profile.d/conda.sh}"
-CONDA_ENV="${CONDA_ENV:-imagebind}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PROJECT_ROOT="${PROJECT_ROOT:-${DEFAULT_PROJECT_ROOT}}"
+if [[ ! -d "${PROJECT_ROOT}" ]]; then
+  echo "WARNING: PROJECT_ROOT=${PROJECT_ROOT} does not exist; using script-inferred root ${DEFAULT_PROJECT_ROOT}" >&2
+  PROJECT_ROOT="${DEFAULT_PROJECT_ROOT}"
+fi
 
 DEPTH_ROOT="${DEPTH_ROOT:-/scratch/hsharm62/OUD_Stress_depth/depth_hdf5}"
 RGB_ROOT="${RGB_ROOT:-/scratch/hsharm62/OUD_Stress_RGB/rgb_hdf5}"
@@ -39,19 +45,13 @@ REQUIRE_COMPLETE="${REQUIRE_COMPLETE:-0}"
 
 cd "${PROJECT_ROOT}"
 
-if [[ -f "${CONDA_SH}" ]]; then
-  # shellcheck disable=SC1090
-  source "${CONDA_SH}"
-  conda activate "${CONDA_ENV}"
-else
-  echo "WARNING: CONDA_SH=${CONDA_SH} not found; assuming the correct Python env is already active." >&2
-fi
-
 mkdir -p "${MAPPING_OUTPUT_ROOT}"
 if [[ "${STAGE}" == "all" || "${STAGE}" == "zarr" ]]; then
   mkdir -p "${ZARR_OUTPUT_ROOT}"
 fi
 
+echo "python=$(command -v python)"
+python --version
 echo "PROJECT_ROOT=${PROJECT_ROOT}"
 echo "DEPTH_ROOT=${DEPTH_ROOT}"
 echo "RGB_ROOT=${RGB_ROOT}"

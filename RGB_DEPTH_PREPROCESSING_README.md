@@ -787,10 +787,13 @@ It writes the local compressed Zarr dataset on scratch by default to:
 
 ### Interactive HPC Run
 
-From the repo root on HPC:
+Activate a conda environment that already has the dependencies, then run from the repo root on HPC:
 
 ```bash
-cd /home/harshit/2024/video_data_processing_pipeline
+source /home/harshit/anaconda3/etc/profile.d/conda.sh
+conda activate imagebind
+
+cd /scratch/hsharm62/video_data_processing_pipeline
 
 bash scripts/hpc_rgb_depth_preprocessing.sh
 ```
@@ -806,12 +809,15 @@ This runs all stages:
 If your cluster uses SLURM:
 
 ```bash
-cd /home/harshit/2024/video_data_processing_pipeline
+source /home/harshit/anaconda3/etc/profile.d/conda.sh
+conda activate imagebind
+
+cd /scratch/hsharm62/video_data_processing_pipeline
 
 sbatch scripts/hpc_rgb_depth_preprocessing.sbatch
 ```
 
-Edit `scripts/hpc_rgb_depth_preprocessing.sbatch` first if your cluster requires `--partition`, `--account`, or GPU directives.
+The launcher assumes the correct environment is already active. Edit `scripts/hpc_rgb_depth_preprocessing.sbatch` first if your cluster requires `--partition`, `--account`, or GPU directives.
 
 ### Smoke Tests On HPC
 
@@ -846,7 +852,7 @@ bash scripts/hpc_rgb_depth_preprocessing.sh
 
 The HPC launcher is controlled by environment variables:
 
-- `PROJECT_ROOT`: repo path, default `/home/harshit/2024/video_data_processing_pipeline`
+- `PROJECT_ROOT`: repo path, default is inferred from the launcher location
 - `DEPTH_ROOT`: depth H5 root, default `/scratch/hsharm62/OUD_Stress_depth/depth_hdf5`
 - `RGB_ROOT`: RGB H5 root, default `/scratch/hsharm62/OUD_Stress_RGB/rgb_hdf5`
 - `MAPPING_OUTPUT_ROOT`: manifest output root, default `assets/imu_video_mapping_hpc`
