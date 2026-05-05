@@ -80,6 +80,16 @@ def require_zarr_modules():
             "This script requires zarr and numcodecs. In this project, run it inside the "
             "imagebind conda env or install them with: pip install zarr numcodecs"
         ) from exc
+    major_version_text = str(getattr(zarr, "__version__", "0")).split(".", maxsplit=1)[0]
+    try:
+        major_version = int(major_version_text)
+    except ValueError:
+        major_version = 0
+    if major_version >= 3:
+        raise SystemExit(
+            f"Unsupported zarr version {zarr.__version__}. This preprocessing script currently writes "
+            "Zarr v2 stores; install zarr<3 in the active environment or use a fresh env with zarr 2.x."
+        )
     return zarr, Blosc
 
 
@@ -263,6 +273,26 @@ def create_dataset(group, name: str, data: np.ndarray, chunks, compressor) -> No
     dataset[:] = data
 
 
+REQUIRED_TASK_ARRAYS = {
+    "rgb",
+    "depth",
+    "target_timestamps",
+    "rgb_source_timestamps",
+    "depth_source_timestamps",
+    "rgb_frame_indices",
+    "depth_frame_indices",
+}
+
+
+def task_group_is_complete(task_group) -> bool:
+    """Return True only when a previous Zarr task group has all expected arrays."""
+    try:
+        child_names = set(task_group.keys())
+    except Exception:
+        return False
+    return REQUIRED_TASK_ARRAYS.issubset(child_names)
+
+
 def row_is_processable(row: pd.Series, require_complete: bool) -> bool:
     if not bool(row.get("both_modalities_have_overlap", False)):
         return False
@@ -409,7 +439,9 @@ def main() -> None:
                 tasks_group = root.require_group("tasks")
                 task_group_name = safe_name(row["task_record_id"])
                 if task_group_name in tasks_group:
-                    if not args.overwrite:
+                    existing_task_group = tasks_group[task_group_name]
+                    existing_group_complete = task_group_is_complete(existing_task_group)
+                    if existing_group_complete and not args.overwrite:
                         skipped_rows.append(
                             {
                                 "task_record_id": row.get("task_record_id", ""),
@@ -417,6 +449,8 @@ def main() -> None:
                             }
                         )
                         continue
+                    if not existing_group_complete and tqdm is not None and not args.no_progress:
+                        tqdm.write(f"rewriting incomplete task group: {row['task_record_id']}")
                     del tasks_group[task_group_name]
                 task_group = tasks_group.create_group(task_group_name)
                 task_group.attrs.update({key: str(value) for key, value in row.to_dict().items()})
