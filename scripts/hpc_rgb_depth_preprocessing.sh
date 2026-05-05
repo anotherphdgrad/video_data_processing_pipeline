@@ -25,7 +25,13 @@ RAW_SAMPLE_RATE_HZ="${RAW_SAMPLE_RATE_HZ:-32.0}"
 NEAREST_TOLERANCE_SECONDS="${NEAREST_TOLERANCE_SECONDS:-0.25}"
 COVERAGE_TOLERANCE_SECONDS="${COVERAGE_TOLERANCE_SECONDS:-0.25}"
 FRAMES_PER_CHUNK="${FRAMES_PER_CHUNK:-150}"
+COMPRESSOR="${COMPRESSOR:-zstd}"
 COMPRESSION_LEVEL="${COMPRESSION_LEVEL:-5}"
+NUM_SHARDS="${NUM_SHARDS:-1}"
+SHARD_INDEX="${SHARD_INDEX:-0}"
+SHARD_BY="${SHARD_BY:-subject}"
+LOCAL_ZARR_WORKERS="${LOCAL_ZARR_WORKERS:-1}"
+CPU_THREADS_PER_WORKER="${CPU_THREADS_PER_WORKER:-1}"
 
 PARTICIPANTS="${PARTICIPANTS:-}"
 TASKS="${TASKS:-}"
@@ -54,11 +60,19 @@ fi
 echo "python=$(command -v python)"
 python --version
 echo "PROJECT_ROOT=${PROJECT_ROOT}"
+echo "IMU_ROOT=${IMU_ROOT}"
+echo "SOURCE_MANIFEST=${SOURCE_MANIFEST}"
+echo "CANDIDATE_CSV=${CANDIDATE_CSV}"
 echo "DEPTH_ROOT=${DEPTH_ROOT}"
 echo "RGB_ROOT=${RGB_ROOT}"
 echo "MAPPING_OUTPUT_ROOT=${MAPPING_OUTPUT_ROOT}"
 echo "ZARR_OUTPUT_ROOT=${ZARR_OUTPUT_ROOT}"
 echo "STAGE=${STAGE}"
+echo "NUM_SHARDS=${NUM_SHARDS}"
+echo "SHARD_INDEX=${SHARD_INDEX}"
+echo "SHARD_BY=${SHARD_BY}"
+echo "LOCAL_ZARR_WORKERS=${LOCAL_ZARR_WORKERS}"
+echo "CPU_THREADS_PER_WORKER=${CPU_THREADS_PER_WORKER}"
 
 common_participant_args=()
 if [[ -n "${PARTICIPANTS}" ]]; then
@@ -98,6 +112,34 @@ if [[ "${REQUIRE_COMPLETE}" == "1" ]]; then
   require_complete_args=(--require-complete)
 fi
 
+run_zarr_shard() {
+  local shard_index="$1"
+  local num_shards="$2"
+  echo
+  echo "[$(date)] Writing Zarr shard ${shard_index}/${num_shards}..."
+  OMP_NUM_THREADS="${CPU_THREADS_PER_WORKER}" \
+  OPENBLAS_NUM_THREADS="${CPU_THREADS_PER_WORKER}" \
+  MKL_NUM_THREADS="${CPU_THREADS_PER_WORKER}" \
+  NUMEXPR_NUM_THREADS="${CPU_THREADS_PER_WORKER}" \
+  python scripts/preprocess_rgb_depth_task_zarr.py \
+    --task-frame-manifest "${TASK_FRAME_MANIFEST}" \
+    --output-root "${ZARR_OUTPUT_ROOT}" \
+    --sample-rate-hz "${SAMPLE_RATE_HZ}" \
+    --nearest-tolerance-seconds "${NEAREST_TOLERANCE_SECONDS}" \
+    --frames-per-chunk "${FRAMES_PER_CHUNK}" \
+    --compressor "${COMPRESSOR}" \
+    --compression-level "${COMPRESSION_LEVEL}" \
+    --num-shards "${num_shards}" \
+    --shard-index "${shard_index}" \
+    --shard-by "${SHARD_BY}" \
+    "${common_participant_args[@]}" \
+    "${task_args[@]}" \
+    "${view_args[@]}" \
+    "${max_zarr_args[@]}" \
+    "${overwrite_args[@]}" \
+    "${require_complete_args[@]}"
+}
+
 if [[ "${STAGE}" == "all" || "${STAGE}" == "session" || "${STAGE}" == "manifests" ]]; then
   echo
   echo "[$(date)] Generating HPC session manifest..."
@@ -126,19 +168,26 @@ fi
 if [[ "${STAGE}" == "all" || "${STAGE}" == "zarr" ]]; then
   echo
   echo "[$(date)] Writing 5 Hz raw RGB/depth Zarr stores..."
-  python scripts/preprocess_rgb_depth_task_zarr.py \
-    --task-frame-manifest "${TASK_FRAME_MANIFEST}" \
-    --output-root "${ZARR_OUTPUT_ROOT}" \
-    --sample-rate-hz "${SAMPLE_RATE_HZ}" \
-    --nearest-tolerance-seconds "${NEAREST_TOLERANCE_SECONDS}" \
-    --frames-per-chunk "${FRAMES_PER_CHUNK}" \
-    --compression-level "${COMPRESSION_LEVEL}" \
-    "${common_participant_args[@]}" \
-    "${task_args[@]}" \
-    "${view_args[@]}" \
-    "${max_zarr_args[@]}" \
-    "${overwrite_args[@]}" \
-    "${require_complete_args[@]}"
+  if [[ "${LOCAL_ZARR_WORKERS}" -gt 1 ]]; then
+    if [[ "${NUM_SHARDS}" != "1" || "${SHARD_INDEX}" != "0" ]]; then
+      echo "ERROR: Use either LOCAL_ZARR_WORKERS or explicit NUM_SHARDS/SHARD_INDEX, not both." >&2
+      exit 2
+    fi
+    if [[ -n "${MAX_ZARR_ROWS}" ]]; then
+      echo "ERROR: MAX_ZARR_ROWS is not supported with LOCAL_ZARR_WORKERS because each worker would apply it independently." >&2
+      exit 2
+    fi
+    pids=()
+    for shard in $(seq 0 $((LOCAL_ZARR_WORKERS - 1))); do
+      run_zarr_shard "${shard}" "${LOCAL_ZARR_WORKERS}" &
+      pids+=("$!")
+    done
+    for pid in "${pids[@]}"; do
+      wait "${pid}"
+    done
+  else
+    run_zarr_shard "${SHARD_INDEX}" "${NUM_SHARDS}"
+  fi
 fi
 
 echo

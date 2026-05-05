@@ -93,7 +93,17 @@ def collect_imu_files(imu_root: Path) -> pd.DataFrame:
                 "imu_last_time": float(time_values.iloc[-1]) if not time_values.empty else pd.NA,
             }
         )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "group",
+            "imu_stem",
+            "imu_csv_path",
+            "imu_csv_name",
+            "imu_first_time",
+            "imu_last_time",
+        ],
+    )
 
 
 def normalize_candidates(candidate_df: pd.DataFrame) -> pd.DataFrame:
@@ -215,6 +225,13 @@ def main() -> None:
     output_root.mkdir(parents=True, exist_ok=True)
 
     imu_df = collect_imu_files(imu_root)
+    if imu_df.empty:
+        raise FileNotFoundError(
+            "No IMU CSV files were found. Expected files matching "
+            f"'left_*_acc.csv' under IMU root: {imu_root}. "
+            "On HPC, either copy assets/IMU_data into the repo checkout or run with "
+            "IMU_ROOT=/path/to/IMU_data bash scripts/hpc_rgb_depth_preprocessing.sh"
+        )
     manifest_df = pd.read_csv(manifest_csv)
     candidate_df = normalize_candidates(pd.read_csv(candidate_csv))
 

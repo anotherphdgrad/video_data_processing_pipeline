@@ -804,6 +804,8 @@ This runs all stages:
 - task/frame manifest
 - 5 Hz raw RGB/depth Zarr writing
 
+The default is `STAGE=all`, so it runs the complete preprocessing pipeline. If you only want manifests, use `STAGE=manifests`. If the manifests already exist and you only want to write Zarr, use `STAGE=zarr`.
+
 ### SLURM HPC Run
 
 If your cluster uses SLURM:
@@ -848,6 +850,75 @@ OVERWRITE_ZARR=1 \
 bash scripts/hpc_rgb_depth_preprocessing.sh
 ```
 
+Run only manifest generation:
+
+```bash
+STAGE=manifests bash scripts/hpc_rgb_depth_preprocessing.sh
+```
+
+Run only Zarr extraction after manifests exist:
+
+```bash
+STAGE=zarr bash scripts/hpc_rgb_depth_preprocessing.sh
+```
+
+### Faster Zarr Extraction On One Node
+
+The Zarr stage is the slow stage because it reads, resizes, and compresses RGB/depth frames.
+
+If you have one GPU but multiple CPU cores, use `LOCAL_ZARR_WORKERS` rather than multiple `sbatch` jobs. The current raw preprocessing does not use the GPU; it is CPU/I/O bound.
+
+Recommended 4-core single-node run:
+
+```bash
+STAGE=zarr \
+LOCAL_ZARR_WORKERS=4 \
+CPU_THREADS_PER_WORKER=1 \
+COMPRESSION_LEVEL=1 \
+bash scripts/hpc_rgb_depth_preprocessing.sh
+```
+
+This starts four local Zarr worker processes inside the same shell job/allocation. Each worker gets a disjoint participant shard, so two workers should not write the same participant Zarr store.
+
+You can also run the full pipeline with local Zarr workers:
+
+```bash
+STAGE=all \
+LOCAL_ZARR_WORKERS=4 \
+CPU_THREADS_PER_WORKER=1 \
+COMPRESSION_LEVEL=1 \
+bash scripts/hpc_rgb_depth_preprocessing.sh
+```
+
+If your manifests already exist, prefer `STAGE=zarr` so you do not regenerate them.
+
+### Faster Zarr Extraction Across Multiple Jobs
+
+If you later have multiple jobs/nodes available, you can split Zarr writing across separate jobs with `NUM_SHARDS` and `SHARD_INDEX`.
+
+Example for four interactive jobs:
+
+```bash
+STAGE=zarr NUM_SHARDS=4 SHARD_INDEX=0 bash scripts/hpc_rgb_depth_preprocessing.sh
+STAGE=zarr NUM_SHARDS=4 SHARD_INDEX=1 bash scripts/hpc_rgb_depth_preprocessing.sh
+STAGE=zarr NUM_SHARDS=4 SHARD_INDEX=2 bash scripts/hpc_rgb_depth_preprocessing.sh
+STAGE=zarr NUM_SHARDS=4 SHARD_INDEX=3 bash scripts/hpc_rgb_depth_preprocessing.sh
+```
+
+By default, shards are assigned by `base_subject_id`, so each participant Zarr store is written by only one job. Keep the same `ZARR_OUTPUT_ROOT` across shards.
+
+For faster but slightly larger output, lower compression:
+
+```bash
+STAGE=zarr COMPRESSION_LEVEL=1 bash scripts/hpc_rgb_depth_preprocessing.sh
+```
+
+For a smaller scoped run, filter by participants, tasks, or views:
+
+```bash
+STAGE=zarr PARTICIPANTS="0001 0002" TASKS="jelly stress" VIEWS="frontal" bash scripts/hpc_rgb_depth_preprocessing.sh
+```
+
 ### Useful Overrides
 
 The HPC launcher is controlled by environment variables:
@@ -860,6 +931,10 @@ The HPC launcher is controlled by environment variables:
 - `STAGE`: `all`, `session`, `task_frames`, `manifests`, or `zarr`
 - `PARTICIPANTS`, `TASKS`, `VIEWS`: optional space-separated filters
 - `MAX_SESSION_ROWS`, `MAX_ZARR_ROWS`: optional smoke-test row limits
+- `LOCAL_ZARR_WORKERS`: number of local Zarr worker processes inside one job/allocation
+- `CPU_THREADS_PER_WORKER`: CPU thread env vars per local worker; default `1`
+- `NUM_SHARDS`, `SHARD_INDEX`, `SHARD_BY`: split Zarr extraction across multiple jobs; default `SHARD_BY=subject`
+- `COMPRESSOR`, `COMPRESSION_LEVEL`: compression backend and level for Zarr writing
 - `OVERWRITE_ZARR=1`: replace existing task groups
 - `REQUIRE_COMPLETE=1`: skip partial-coverage task rows during Zarr writing
 

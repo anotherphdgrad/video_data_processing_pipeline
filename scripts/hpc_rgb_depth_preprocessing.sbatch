@@ -25,5 +25,8 @@ export STAGE="${STAGE:-all}"
 export DEPTH_ROOT="${DEPTH_ROOT:-/scratch/hsharm62/OUD_Stress_depth/depth_hdf5}"
 export RGB_ROOT="${RGB_ROOT:-/scratch/hsharm62/OUD_Stress_RGB/rgb_hdf5}"
 export ZARR_OUTPUT_ROOT="${ZARR_OUTPUT_ROOT:-/scratch/hsharm62/OUD_Stress_preprocessed/rgb_depth_zarr_5hz_raw}"
+export NUM_SHARDS="${NUM_SHARDS:-1}"
+export SHARD_INDEX="${SHARD_INDEX:-0}"
+export SHARD_BY="${SHARD_BY:-subject}"
 
 bash "${PROJECT_ROOT}/scripts/hpc_rgb_depth_preprocessing.sh"

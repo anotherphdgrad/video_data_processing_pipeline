@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 from pathlib import Path
 import re
 from typing import Iterable
@@ -55,6 +56,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tasks", nargs="*", default=None, help="Optional task ids to process.")
     parser.add_argument("--views", nargs="*", default=None, help="Optional view types to process, e.g. frontal side.")
     parser.add_argument("--max-rows", type=int, default=None, help="Optional smoke-test row limit.")
+    parser.add_argument("--num-shards", type=int, default=1, help="Split manifest rows into this many shards.")
+    parser.add_argument("--shard-index", type=int, default=0, help="Zero-based shard index to process.")
+    parser.add_argument(
+        "--shard-by",
+        choices=["subject", "row"],
+        default="subject",
+        help="Shard by base_subject_id by default so parallel jobs do not write the same participant Zarr store.",
+    )
     parser.add_argument("--require-complete", action="store_true", help="Skip partial-coverage task rows.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing task groups inside Zarr stores.")
     parser.add_argument("--no-progress", action="store_true", help="Disable tqdm progress bars.")
@@ -223,6 +232,11 @@ def row_is_processable(row: pd.Series, require_complete: bool) -> bool:
     return row.get("combined_coverage_status") in {"complete", "partial"}
 
 
+def stable_shard_id(value: object, num_shards: int) -> int:
+    digest = hashlib.md5(str(value).encode("utf-8")).hexdigest()
+    return int(digest[:12], 16) % int(num_shards)
+
+
 def main() -> None:
     args = parse_args()
     zarr, Blosc = require_zarr_modules()
@@ -241,6 +255,17 @@ def main() -> None:
         manifest_df = manifest_df[manifest_df["task_id"].astype(str).isin(set(args.tasks))].copy()
     if args.views:
         manifest_df = manifest_df[manifest_df["view_type"].astype(str).isin(set(args.views))].copy()
+    if args.num_shards <= 0:
+        raise ValueError("--num-shards must be positive")
+    if args.shard_index < 0 or args.shard_index >= args.num_shards:
+        raise ValueError("--shard-index must satisfy 0 <= shard_index < num_shards")
+    if args.num_shards > 1:
+        manifest_df = manifest_df.reset_index(drop=True)
+        if args.shard_by == "row":
+            shard_ids = manifest_df.index % int(args.num_shards)
+        else:
+            shard_ids = manifest_df["base_subject_id"].map(lambda value: stable_shard_id(value, args.num_shards))
+        manifest_df = manifest_df[shard_ids == int(args.shard_index)].copy()
     if args.max_rows is not None:
         manifest_df = manifest_df.head(int(args.max_rows)).copy()
 
