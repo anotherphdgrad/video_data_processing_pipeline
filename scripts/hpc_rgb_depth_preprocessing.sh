@@ -18,14 +18,6 @@ fi
 
 DEPTH_ROOT="${DEPTH_ROOT:-/scratch/hsharm62/OUD_Stress_depth/depth_hdf5}"
 RGB_ROOT="${RGB_ROOT:-/scratch/hsharm62/OUD_Stress_RGB/rgb_hdf5}"
-IMU_ROOT="${IMU_ROOT:-${PROJECT_ROOT}/assets/IMU_data}"
-SOURCE_MANIFEST="${SOURCE_MANIFEST:-${PROJECT_ROOT}/assets/manifest_mapping_clean_updated_sol.csv}"
-CANDIDATE_CSV="${CANDIDATE_CSV:-${PROJECT_ROOT}/assets/imu_participant_mapping_candidates.csv}"
-
-MAPPING_OUTPUT_ROOT="${MAPPING_OUTPUT_ROOT:-${PROJECT_ROOT}/assets/imu_video_mapping_hpc}"
-SESSION_MANIFEST="${SESSION_MANIFEST:-${MAPPING_OUTPUT_ROOT}/imu_to_video_session_manifest.csv}"
-TASK_FRAME_MANIFEST="${TASK_FRAME_MANIFEST:-${MAPPING_OUTPUT_ROOT}/rgb_depth_task_frame_manifest.csv}"
-ZARR_OUTPUT_ROOT="${ZARR_OUTPUT_ROOT:-/scratch/hsharm62/OUD_Stress_preprocessed/rgb_depth_zarr_5hz_raw}"
 
 STAGE="${STAGE:-all}"
 SAMPLE_RATE_HZ="${SAMPLE_RATE_HZ:-5.0}"
@@ -42,6 +34,15 @@ MAX_SESSION_ROWS="${MAX_SESSION_ROWS:-}"
 MAX_ZARR_ROWS="${MAX_ZARR_ROWS:-}"
 OVERWRITE_ZARR="${OVERWRITE_ZARR:-0}"
 REQUIRE_COMPLETE="${REQUIRE_COMPLETE:-0}"
+
+IMU_ROOT="${IMU_ROOT:-${PROJECT_ROOT}/assets/IMU_data}"
+SOURCE_MANIFEST="${SOURCE_MANIFEST:-${PROJECT_ROOT}/assets/manifest_mapping_clean_updated_sol.csv}"
+CANDIDATE_CSV="${CANDIDATE_CSV:-${PROJECT_ROOT}/assets/imu_participant_mapping_candidates.csv}"
+
+MAPPING_OUTPUT_ROOT="${MAPPING_OUTPUT_ROOT:-${PROJECT_ROOT}/assets/imu_video_mapping_hpc}"
+SESSION_MANIFEST="${SESSION_MANIFEST:-${MAPPING_OUTPUT_ROOT}/imu_to_video_session_manifest.csv}"
+TASK_FRAME_MANIFEST="${TASK_FRAME_MANIFEST:-${MAPPING_OUTPUT_ROOT}/rgb_depth_task_frame_manifest.csv}"
+ZARR_OUTPUT_ROOT="${ZARR_OUTPUT_ROOT:-/scratch/hsharm62/OUD_Stress_preprocessed/rgb_depth_zarr_5hz_raw}"
 
 cd "${PROJECT_ROOT}"
 
