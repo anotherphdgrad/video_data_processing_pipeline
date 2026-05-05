@@ -27,6 +27,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+processed_rgb_depth_zarr_5hz_raw
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
