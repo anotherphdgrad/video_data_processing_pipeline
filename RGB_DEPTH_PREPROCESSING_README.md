@@ -763,3 +763,98 @@ The intended evaluation contract remains:
 - canonical participant grouping via `base_subject_id`
 - inner validation split via `GroupShuffleSplit`
 - default fold seed `42`, with inner split seed `42 + fold_id`
+
+## HPC Launch
+
+HPC-safe launch files:
+
+- [`scripts/hpc_rgb_depth_preprocessing.sh`](/home/harshit/2024/video_data_processing_pipeline/scripts/hpc_rgb_depth_preprocessing.sh)
+- [`scripts/hpc_rgb_depth_preprocessing.sbatch`](/home/harshit/2024/video_data_processing_pipeline/scripts/hpc_rgb_depth_preprocessing.sbatch)
+
+The launcher regenerates the session manifest with HPC roots:
+
+- depth: `/scratch/hsharm62/OUD_Stress_depth/depth_hdf5`
+- RGB: `/scratch/hsharm62/OUD_Stress_RGB/rgb_hdf5`
+
+It writes HPC-specific mapping outputs by default to:
+
+- `assets/imu_video_mapping_hpc/imu_to_video_session_manifest.csv`
+- `assets/imu_video_mapping_hpc/rgb_depth_task_frame_manifest.csv`
+
+It writes the local compressed Zarr dataset on scratch by default to:
+
+- `/scratch/hsharm62/OUD_Stress_preprocessed/rgb_depth_zarr_5hz_raw`
+
+### Interactive HPC Run
+
+From the repo root on HPC:
+
+```bash
+cd /home/harshit/2024/video_data_processing_pipeline
+
+bash scripts/hpc_rgb_depth_preprocessing.sh
+```
+
+This runs all stages:
+
+- session manifest with `/scratch/hsharm62` RGB/depth paths
+- task/frame manifest
+- 5 Hz raw RGB/depth Zarr writing
+
+### SLURM HPC Run
+
+If your cluster uses SLURM:
+
+```bash
+cd /home/harshit/2024/video_data_processing_pipeline
+
+sbatch scripts/hpc_rgb_depth_preprocessing.sbatch
+```
+
+Edit `scripts/hpc_rgb_depth_preprocessing.sbatch` first if your cluster requires `--partition`, `--account`, or GPU directives.
+
+### Smoke Tests On HPC
+
+Generate manifests only:
+
+```bash
+STAGE=manifests bash scripts/hpc_rgb_depth_preprocessing.sh
+```
+
+Smoke test one participant through task/frame mapping:
+
+```bash
+STAGE=task_frames \
+PARTICIPANTS="0001" \
+MAX_SESSION_ROWS=2 \
+bash scripts/hpc_rgb_depth_preprocessing.sh
+```
+
+Smoke test one Zarr task after a task/frame manifest exists:
+
+```bash
+STAGE=zarr \
+PARTICIPANTS="0001" \
+TASKS="jelly" \
+VIEWS="frontal" \
+MAX_ZARR_ROWS=1 \
+OVERWRITE_ZARR=1 \
+bash scripts/hpc_rgb_depth_preprocessing.sh
+```
+
+### Useful Overrides
+
+The HPC launcher is controlled by environment variables:
+
+- `PROJECT_ROOT`: repo path, default `/home/harshit/2024/video_data_processing_pipeline`
+- `DEPTH_ROOT`: depth H5 root, default `/scratch/hsharm62/OUD_Stress_depth/depth_hdf5`
+- `RGB_ROOT`: RGB H5 root, default `/scratch/hsharm62/OUD_Stress_RGB/rgb_hdf5`
+- `MAPPING_OUTPUT_ROOT`: manifest output root, default `assets/imu_video_mapping_hpc`
+- `ZARR_OUTPUT_ROOT`: compressed Zarr output root, default `/scratch/hsharm62/OUD_Stress_preprocessed/rgb_depth_zarr_5hz_raw`
+- `STAGE`: `all`, `session`, `task_frames`, `manifests`, or `zarr`
+- `PARTICIPANTS`, `TASKS`, `VIEWS`: optional space-separated filters
+- `MAX_SESSION_ROWS`, `MAX_ZARR_ROWS`: optional smoke-test row limits
+- `OVERWRITE_ZARR=1`: replace existing task groups
+- `REQUIRE_COMPLETE=1`: skip partial-coverage task rows during Zarr writing
+
+Progress bars are enabled by default in the task/frame and Zarr stages.
