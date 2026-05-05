@@ -113,15 +113,19 @@ def read_timestamps(h5_file: h5py.File, explicit_name: str | None) -> tuple[str,
     return f"{dataset_name}|{timestamp_units}", timestamps
 
 
-def read_timestamps_cached(
-    timestamp_cache: dict[tuple[str, str | None], tuple[str, np.ndarray]],
+def read_timestamp_slice(
     h5_file: h5py.File,
     explicit_name: str | None,
+    start_index: int,
+    end_index_exclusive: int,
 ) -> tuple[str, np.ndarray]:
-    cache_key = (h5_file.filename, explicit_name)
-    if cache_key not in timestamp_cache:
-        timestamp_cache[cache_key] = read_timestamps(h5_file, explicit_name)
-    return timestamp_cache[cache_key]
+    dataset_name = find_h5_dataset(h5_file, explicit_name, TIMESTAMP_DATASET_CANDIDATES)
+    timestamps = np.asarray(
+        h5_file[dataset_name][int(start_index) : int(end_index_exclusive)],
+        dtype=np.float64,
+    )
+    timestamps, timestamp_units = normalize_timestamp_units(timestamps)
+    return f"{dataset_name}|{timestamp_units}", timestamps
 
 
 def normalize_timestamp_units(timestamps: np.ndarray) -> tuple[np.ndarray, str]:
@@ -162,6 +166,22 @@ def nearest_indices(
         & (gaps <= float(tolerance_seconds))
     )
     return indices[valid], source_times[valid], target_times[valid]
+
+
+def nearest_indices_from_slice(
+    timestamps: np.ndarray,
+    target_times: np.ndarray,
+    global_start_index: int,
+    tolerance_seconds: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    local_indices, source_times, valid_target_times = nearest_indices(
+        timestamps,
+        target_times,
+        start_index=0,
+        end_index_exclusive=len(timestamps),
+        tolerance_seconds=tolerance_seconds,
+    )
+    return local_indices + int(global_start_index), source_times, valid_target_times
 
 
 def normalize_rgb_frame(frame: np.ndarray) -> np.ndarray:
@@ -297,7 +317,6 @@ def main() -> None:
     compressor = Blosc(cname=args.compressor, clevel=int(args.compression_level), shuffle=Blosc.BITSHUFFLE)
     metadata_rows: list[dict] = []
     skipped_rows: list[dict] = []
-    timestamp_cache: dict[tuple[str, str | None], tuple[str, np.ndarray]] = {}
     manifest_records = list(manifest_df.reset_index(drop=True).iterrows())
     iterator = manifest_records
     if not args.no_progress:
@@ -319,15 +338,21 @@ def main() -> None:
             with h5py.File(depth_path, "r") as depth_h5, h5py.File(rgb_path, "r") as rgb_h5:
                 depth_image_name = find_h5_dataset(depth_h5, args.image_dataset, IMAGE_DATASET_CANDIDATES)
                 rgb_image_name = find_h5_dataset(rgb_h5, args.image_dataset, IMAGE_DATASET_CANDIDATES)
-                depth_ts_name, depth_timestamps = read_timestamps_cached(
-                    timestamp_cache,
+                depth_start_index = int(row["depth_start_frame_index"])
+                depth_end_index_exclusive = int(row["depth_end_frame_index_exclusive"])
+                rgb_start_index = int(row["rgb_start_frame_index"])
+                rgb_end_index_exclusive = int(row["rgb_end_frame_index_exclusive"])
+                depth_ts_name, depth_timestamps = read_timestamp_slice(
                     depth_h5,
                     args.timestamp_dataset,
+                    depth_start_index,
+                    depth_end_index_exclusive,
                 )
-                rgb_ts_name, rgb_timestamps = read_timestamps_cached(
-                    timestamp_cache,
+                rgb_ts_name, rgb_timestamps = read_timestamp_slice(
                     rgb_h5,
                     args.timestamp_dataset,
+                    rgb_start_index,
+                    rgb_end_index_exclusive,
                 )
 
                 target_times = np.arange(
@@ -336,18 +361,16 @@ def main() -> None:
                     1.0 / float(args.sample_rate_hz),
                     dtype=np.float64,
                 )
-                depth_indices, depth_source_ts, depth_target_ts = nearest_indices(
+                depth_indices, depth_source_ts, depth_target_ts = nearest_indices_from_slice(
                     depth_timestamps,
                     target_times,
-                    int(row["depth_start_frame_index"]),
-                    int(row["depth_end_frame_index_exclusive"]),
+                    depth_start_index,
                     float(args.nearest_tolerance_seconds),
                 )
-                rgb_indices, rgb_source_ts, rgb_target_ts = nearest_indices(
+                rgb_indices, rgb_source_ts, rgb_target_ts = nearest_indices_from_slice(
                     rgb_timestamps,
                     target_times,
-                    int(row["rgb_start_frame_index"]),
-                    int(row["rgb_end_frame_index_exclusive"]),
+                    rgb_start_index,
                     float(args.nearest_tolerance_seconds),
                 )
                 common_target_ts, depth_positions, rgb_positions = np.intersect1d(
@@ -500,8 +523,12 @@ def main() -> None:
                 }
             )
 
-    metadata_path = output_root / "preprocessed_rgb_depth_metadata.csv"
-    skipped_path = output_root / "preprocessed_rgb_depth_skipped.csv"
+    if args.num_shards > 1:
+        suffix = f"_shard_{int(args.shard_index):03d}_of_{int(args.num_shards):03d}"
+    else:
+        suffix = ""
+    metadata_path = output_root / f"preprocessed_rgb_depth_metadata{suffix}.csv"
+    skipped_path = output_root / f"preprocessed_rgb_depth_skipped{suffix}.csv"
     pd.DataFrame(metadata_rows).to_csv(metadata_path, index=False)
     pd.DataFrame(skipped_rows).to_csv(skipped_path, index=False)
     print(f"Wrote metadata to {metadata_path}")
