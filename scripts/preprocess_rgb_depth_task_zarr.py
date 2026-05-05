@@ -27,6 +27,7 @@ except ImportError:  # pragma: no cover - tqdm is available in the imagebind env
 IMAGE_DATASET_CANDIDATES = ("images", "frames", "rgb", "depth")
 TIMESTAMP_DATASET_CANDIDATES = ("timestamps", "timestamp", "time", "times", "frame_timestamps")
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+SCRIPT_VERSION = "2026-05-05-sliced-task-timestamps"
 
 
 def parse_args() -> argparse.Namespace:
@@ -105,12 +106,6 @@ def find_h5_dataset(h5_file: h5py.File, explicit_name: str | None, candidates: I
     available = []
     h5_file.visititems(lambda name, obj: available.append(name) if isinstance(obj, h5py.Dataset) else None)
     raise KeyError(f"No matching dataset found in {h5_file.filename}. Available datasets: {available[:20]}")
-
-
-def read_timestamps(h5_file: h5py.File, explicit_name: str | None) -> tuple[str, np.ndarray]:
-    dataset_name = find_h5_dataset(h5_file, explicit_name, TIMESTAMP_DATASET_CANDIDATES)
-    timestamps, timestamp_units = normalize_timestamp_units(np.asarray(h5_file[dataset_name][:], dtype=np.float64))
-    return f"{dataset_name}|{timestamp_units}", timestamps
 
 
 def read_timestamp_slice(
@@ -283,6 +278,7 @@ def stable_shard_id(value: object, num_shards: int) -> int:
 
 def main() -> None:
     args = parse_args()
+    print(f"preprocess_rgb_depth_task_zarr.py version={SCRIPT_VERSION}", flush=True)
     zarr, Blosc = require_zarr_modules()
     task_frame_manifest = Path(args.task_frame_manifest).resolve()
     output_root = Path(args.output_root).resolve()
