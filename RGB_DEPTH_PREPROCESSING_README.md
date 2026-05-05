@@ -945,3 +945,106 @@ The HPC launcher is controlled by environment variables:
 - `REQUIRE_COMPLETE=1`: skip partial-coverage task rows during Zarr writing
 
 Progress bars are enabled by default in the task/frame and Zarr stages.
+
+## Derived RGB/Depth Representations
+
+After the raw 5 Hz RGB/depth Zarr extraction finishes, validate the raw stores before building downstream features:
+
+```bash
+python scripts/validate_rgb_depth_raw_zarr.py \
+  --input-root processed_rgb_depth_zarr_5hz_raw \
+  --output-csv assets/derived_feature_visual_checks/raw_zarr_validation_report.csv
+```
+
+On the current local partial extraction, this checks `14` stores and reports `161` complete task groups plus `1` incomplete task group. Derived feature extraction skips incomplete raw task groups.
+
+The next-stage derived script writes participant-wise Zarr stores with the same split-critical metadata (`base_subject_id`, `group`, `task_id`, `view_type`, `stress_label`, timestamps, and source frame indices).
+
+### 1. Human-Masked RGB/Depth
+
+YOLO proposes person boxes from RGB frames, SAM2 refines the human mask, and the same mask is applied to both RGB and depth.
+
+Masking policy:
+
+- run YOLO on every frame
+- if YOLO succeeds, prompt SAM2 and write a direct mask
+- reject masks with area `< 1%` or `> 70%` of the frame
+- if YOLO/SAM2 fails, reuse the last valid mask for up to `15` frames / `3` seconds at `5 Hz`
+- if no valid direct or carry-forward mask exists, skip the task group with an inspectable error
+- use `--allow-missing-masks` only for inspection runs where zero masks should be written instead of skipping
+
+The derived Zarr stores include `mask_source`, `mask_area_fraction`, `mask_age_frames`, and `yolo_box_count` arrays. `mask_source` uses `0=missing`, `1=direct_yolo_sam2`, and `2=carry_forward`.
+
+```bash
+python scripts/preprocess_rgb_depth_derived_zarr.py \
+  --input-root processed_rgb_depth_zarr_5hz_raw \
+  --output-root processed_rgb_depth_zarr_5hz_human_masked_sam2_yolo \
+  --representation human_masked \
+  --participants 0001 \
+  --tasks stress \
+  --views frontal \
+  --max-task-groups 1 \
+  --start-frame 100 \
+  --mask-max-frames 40 \
+  --sam2-config /path/to/sam2_config.yaml \
+  --sam2-checkpoint /path/to/sam2_checkpoint.pt \
+  --write-smoke-png assets/derived_feature_visual_checks/0001_frontal_stress_human_masked_smoke.png \
+  --overwrite
+```
+
+SAM2 is intentionally required for this stage. The script does not silently fall back to SAM v1.
+
+### 2. Motion Difference Representations
+
+Consecutive-frame motion differences use the human-masked output as input:
+
+```bash
+python scripts/preprocess_rgb_depth_derived_zarr.py \
+  --input-root processed_rgb_depth_zarr_5hz_raw \
+  --mask-source-root processed_rgb_depth_zarr_5hz_human_masked_sam2_yolo \
+  --output-root processed_rgb_depth_zarr_5hz_motion_diff_previous \
+  --representation motion_previous \
+  --participants 0001 \
+  --tasks stress \
+  --views frontal \
+  --max-task-groups 1 \
+  --write-smoke-png assets/derived_feature_visual_checks/0001_frontal_stress_motion_previous_smoke.png \
+  --overwrite
+```
+
+The jelly-baseline variant uses the mean over the first three 30-second jelly windows for the same participant and view:
+
+```bash
+python scripts/preprocess_rgb_depth_derived_zarr.py \
+  --input-root processed_rgb_depth_zarr_5hz_raw \
+  --mask-source-root processed_rgb_depth_zarr_5hz_human_masked_sam2_yolo \
+  --output-root processed_rgb_depth_zarr_5hz_motion_diff_jelly_mean3 \
+  --representation motion_jelly_mean3 \
+  --participants 0001 \
+  --tasks stress \
+  --views frontal \
+  --max-task-groups 1 \
+  --overwrite
+```
+
+### 3. RAFT Flow-Edge Representations
+
+RAFT comes from `torchvision.models.optical_flow`; no separate RAFT repo is required. For depth, the masked depth frame is robustly normalized into a 3-channel pseudo-image before RAFT.
+
+```bash
+python scripts/preprocess_rgb_depth_derived_zarr.py \
+  --input-root processed_rgb_depth_zarr_5hz_raw \
+  --mask-source-root processed_rgb_depth_zarr_5hz_human_masked_sam2_yolo \
+  --output-root processed_rgb_depth_zarr_5hz_flow_edge_raft \
+  --representation flow_edge_raft \
+  --participants 0001 \
+  --tasks stress \
+  --views frontal \
+  --max-task-groups 1 \
+  --flow-lag 5 \
+  --flow-edge-clamp 10 \
+  --write-smoke-png assets/derived_feature_visual_checks/0001_frontal_stress_flow_edge_smoke.png \
+  --overwrite
+```
+
+The flow-edge smoke PNG includes raw RGB/depth, masked RGB/depth, motion-difference panels, RAFT flow magnitude, and Sobel flow-edge maps when the masked source is available.
