@@ -615,3 +615,151 @@ The main remaining items before implementation are now technical verification ta
 - compute or validate `offset_rgb`
 - verify IMU timestamp precision for frame-level alignment
 - define acceptable RGB/depth timestamp mismatch thresholds for the mapping script
+
+## Implemented Task-Aligned V1
+
+The current implemented preprocessing path is intentionally raw-first:
+
+- use IMU labels to derive coarse task start/end timestamps
+- map those task intervals onto RGB/depth H5 timestamp arrays
+- downsample task streams to `5 Hz`
+- write participant-wise compressed Zarr stores
+- defer SAM masking/background removal until the raw alignment and storage path is validated
+
+This means the first local Zarr outputs are unmasked RGB/depth task streams, not final masked clips.
+
+### Session manifest generation
+
+Script:
+
+- [`scripts/generate_imu_video_mapping_manifest.py`](/home/harshit/2024/video_data_processing_pipeline/scripts/generate_imu_video_mapping_manifest.py)
+
+Important behavior:
+
+- reconstructs RGB/depth paths from H5 filenames plus runtime `--depth-root` and `--rgb-root`
+- skips IMU participant `8876`
+- preserves `xianfei` as `group=Control` while retaining `manifest_group` provenance
+- maps `9933v2` to the `9933` session-2/video `_p2_` files
+- if multiple video candidates exist, keeps the nearest video row per `(group, imu_stem, view_type)`
+- keeps frontal and side views as separate rows when both are available
+- adds audit columns for candidate counts, selected rank, dropped duplicate candidates, and threshold status
+
+Recommended local command:
+
+```bash
+source /home/harshit/anaconda3/etc/profile.d/conda.sh
+conda activate imagebind
+python scripts/generate_imu_video_mapping_manifest.py \
+  --imu-root assets/IMU_data \
+  --manifest-csv assets/manifest_mapping_clean_updated_sol.csv \
+  --candidate-csv assets/imu_participant_mapping_candidates.csv \
+  --depth-root /home/harshit/mnt/sol_scratch/OUD_Stress_depth/depth_hdf5 \
+  --rgb-root /home/harshit/mnt/sol_scratch/OUD_Stress_RGB/rgb_hdf5 \
+  --output-root assets/imu_video_mapping
+```
+
+### Task/frame manifest generation
+
+Script:
+
+- [`scripts/generate_rgb_depth_task_frame_manifest.py`](/home/harshit/2024/video_data_processing_pipeline/scripts/generate_rgb_depth_task_frame_manifest.py)
+
+Important behavior:
+
+- reads the session manifest
+- reconstructs IMU sample timestamps using the IMU branch convention: first IMU timestamp plus row index at `32 Hz`
+- keeps only IMU target tasks: `jelly`, `count`, `baseline`, `bad`, `stress`, `arithmetic`, `stroop`
+- maps binary labels using the IMU branch contract:
+  - non-stress: `jelly`, `count`, `baseline`
+  - stress: `bad`, `stress`, `arithmetic`, `stroop`
+- reads only H5 timestamp arrays for mapping
+- outputs RGB/depth start/end frame indices and coverage status for every participant/session/view/task
+
+Recommended local command:
+
+```bash
+source /home/harshit/anaconda3/etc/profile.d/conda.sh
+conda activate imagebind
+python scripts/generate_rgb_depth_task_frame_manifest.py \
+  --session-manifest assets/imu_video_mapping/imu_to_video_session_manifest.csv \
+  --output-csv assets/imu_video_mapping/rgb_depth_task_frame_manifest.csv
+```
+
+This shows a `tqdm` progress bar over session rows. Use `--no-progress` if running in a logger that does not handle progress bars well.
+
+Smoke-test command:
+
+```bash
+source /home/harshit/anaconda3/etc/profile.d/conda.sh
+conda activate imagebind
+python scripts/generate_rgb_depth_task_frame_manifest.py \
+  --session-manifest assets/imu_video_mapping/imu_to_video_session_manifest.csv \
+  --output-csv /tmp/rgb_depth_task_frame_manifest_smoke.csv \
+  --participants 0001 \
+  --max-session-rows 2
+```
+
+Fast interval-only smoke-test command:
+
+```bash
+source /home/harshit/anaconda3/etc/profile.d/conda.sh
+conda activate imagebind
+python scripts/generate_rgb_depth_task_frame_manifest.py \
+  --session-manifest assets/imu_video_mapping/imu_to_video_session_manifest.csv \
+  --output-csv /tmp/rgb_depth_task_intervals_0001_smoke.csv \
+  --participants 0001 \
+  --max-session-rows 2 \
+  --skip-h5
+```
+
+Use `--skip-h5` only to validate IMU-derived task intervals. It does not generate usable RGB/depth frame indices for Zarr extraction.
+
+### Raw 5 Hz Zarr preprocessing
+
+Script:
+
+- [`scripts/preprocess_rgb_depth_task_zarr.py`](/home/harshit/2024/video_data_processing_pipeline/scripts/preprocess_rgb_depth_task_zarr.py)
+
+Important behavior:
+
+- consumes `rgb_depth_task_frame_manifest.csv`
+- samples target timestamps at `5 Hz`
+- chooses nearest RGB and depth frames within a configurable tolerance
+- writes one compressed Zarr store per `group/base_subject_id`
+- writes one task group per participant/view/task segment
+- stores RGB, depth, target timestamps, source timestamps, source frame indices, task id, stress label, participant id, view type, and source file provenance
+- defaults to resizing frames to `224 x 224`
+- uses Blosc/Zstandard compression with frame chunks of `150` samples, matching `30s` at `5 Hz`
+
+Recommended local smoke-test command:
+
+```bash
+source /home/harshit/anaconda3/etc/profile.d/conda.sh
+conda activate imagebind
+python scripts/preprocess_rgb_depth_task_zarr.py \
+  --task-frame-manifest assets/imu_video_mapping/rgb_depth_task_frame_manifest.csv \
+  --output-root /tmp/rgb_depth_zarr_smoke \
+  --participants 0001 \
+  --tasks jelly \
+  --views frontal \
+  --max-rows 1 \
+  --overwrite
+```
+
+This shows a `tqdm` progress bar over task groups and a nested frame progress bar for the current task. Each completed task prints the destination Zarr store path.
+
+### Evaluation alignment
+
+The metadata written by the task/frame manifest and Zarr preprocessing includes `base_subject_id`.
+
+This should be used for future RGB/depth folds so evaluation remains aligned with:
+
+- `/home/harshit/2024/IMU_stress_sensing_src/imu_stress/dataset.py`
+- `/home/harshit/2024/IMU_stress_sensing_src/imu_stress/folds.py`
+
+The intended evaluation contract remains:
+
+- participant-disjoint outer folds via `GroupKFold`
+- canonical participant grouping via `base_subject_id`
+- inner validation split via `GroupShuffleSplit`
+- default fold seed `42`, with inner split seed `42 + fold_id`

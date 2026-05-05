@@ -7,3 +7,5 @@ num_unique_imu_with_session_rows,78
 num_missing_report_rows,0
 num_depth_missing_rows,0
 num_rgb_missing_rows,0
+num_session_duplicate_candidates_dropped,6
+num_session_rows_outside_threshold,2

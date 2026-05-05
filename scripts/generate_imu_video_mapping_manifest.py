@@ -165,6 +165,45 @@ def derive_v2_fallback_rows(manifest_df: pd.DataFrame, imu_stem: str, group: str
     return preferred if not preferred.empty else subset
 
 
+def select_nearest_session_rows_by_view(
+    manifest_hits: pd.DataFrame,
+    session_match_threshold_seconds: float,
+) -> pd.DataFrame:
+    """Keep the nearest video session candidate for each view.
+
+    A participant can legitimately have frontal and side recordings. What we do
+    not want is multiple frontal or multiple side rows for the same IMU session.
+    """
+    if manifest_hits.empty:
+        return manifest_hits
+
+    selected_rows = []
+    total_candidates = int(len(manifest_hits))
+    rank_df = manifest_hits.copy()
+    rank_df["view_type"] = rank_df["view_type"].fillna("").astype(str)
+    rank_df["_rank_diff"] = pd.to_numeric(rank_df["session_time_diff_seconds"], errors="coerce")
+    rank_df["_rank_diff"] = rank_df["_rank_diff"].fillna(float("inf"))
+    rank_df["_rank_filename"] = rank_df["depth_filename"].astype(str)
+
+    rank_df = rank_df.sort_values(
+        by=["view_type", "_rank_diff", "_rank_filename"],
+        kind="mergesort",
+    ).copy()
+    rank_df["session_candidate_count_total"] = total_candidates
+    rank_df["session_candidate_count_for_view"] = rank_df.groupby("view_type")["view_type"].transform("size")
+    rank_df["session_candidate_rank_for_view"] = rank_df.groupby("view_type").cumcount() + 1
+    rank_df["session_dropped_candidate_count_for_view"] = rank_df["session_candidate_count_for_view"] - 1
+    rank_df["session_selected_by"] = "nearest_video_session_per_view"
+    rank_df["session_within_threshold"] = (
+        pd.to_numeric(rank_df["session_time_diff_seconds"], errors="coerce")
+        <= float(session_match_threshold_seconds)
+    )
+
+    selected_rows.append(rank_df[rank_df["session_candidate_rank_for_view"] == 1].copy())
+    selected = pd.concat(selected_rows, ignore_index=False)
+    return selected.drop(columns=["_rank_diff", "_rank_filename"])
+
+
 def main() -> None:
     args = parse_args()
     imu_root = Path(args.imu_root).resolve()
@@ -282,17 +321,13 @@ def main() -> None:
             imu_first_time = float(row.imu_first_time)
             manifest_hits["imu_first_time"] = imu_first_time
             manifest_hits["session_time_diff_seconds"] = (manifest_hits["video_session_ts"] - imu_first_time).abs()
-            within_threshold = manifest_hits[
-                manifest_hits["session_time_diff_seconds"] <= float(args.session_match_threshold_seconds)
-            ].copy()
-            if not within_threshold.empty:
-                manifest_hits = within_threshold
-            else:
-                best_diff = manifest_hits["session_time_diff_seconds"].min()
-                manifest_hits = manifest_hits[manifest_hits["session_time_diff_seconds"] == best_diff].copy()
         else:
             manifest_hits["imu_first_time"] = pd.NA
             manifest_hits["session_time_diff_seconds"] = pd.NA
+        manifest_hits = select_nearest_session_rows_by_view(
+            manifest_hits,
+            session_match_threshold_seconds=float(args.session_match_threshold_seconds),
+        )
 
         for hit in manifest_hits.itertuples():
             depth_filename = hit.depth_filename
@@ -320,6 +355,14 @@ def main() -> None:
                 "video_session_ts": getattr(hit, "video_session_ts", pd.NA),
                 "imu_first_time": getattr(hit, "imu_first_time", pd.NA),
                 "session_time_diff_seconds": getattr(hit, "session_time_diff_seconds", pd.NA),
+                "session_candidate_count_total": getattr(hit, "session_candidate_count_total", pd.NA),
+                "session_candidate_count_for_view": getattr(hit, "session_candidate_count_for_view", pd.NA),
+                "session_candidate_rank_for_view": getattr(hit, "session_candidate_rank_for_view", pd.NA),
+                "session_dropped_candidate_count_for_view": getattr(
+                    hit, "session_dropped_candidate_count_for_view", pd.NA
+                ),
+                "session_selected_by": getattr(hit, "session_selected_by", pd.NA),
+                "session_within_threshold": getattr(hit, "session_within_threshold", pd.NA),
                 "offset_depth": hit.offset_depth,
                 "is_session2": hit.is_session2,
                 "has_session2": hit.has_session2,
@@ -390,6 +433,14 @@ def main() -> None:
         {"metric": "num_missing_report_rows", "value": int(len(missing_df))},
         {"metric": "num_depth_missing_rows", "value": int((~session_df["depth_exists"]).sum()) if not session_df.empty else 0},
         {"metric": "num_rgb_missing_rows", "value": int((~session_df["rgb_exists"]).sum()) if not session_df.empty else 0},
+        {
+            "metric": "num_session_duplicate_candidates_dropped",
+            "value": int(session_df["session_dropped_candidate_count_for_view"].sum()) if not session_df.empty else 0,
+        },
+        {
+            "metric": "num_session_rows_outside_threshold",
+            "value": int((~session_df["session_within_threshold"].astype(bool)).sum()) if not session_df.empty else 0,
+        },
     ]
     pd.DataFrame(summary_rows).to_csv(summary_path, index=False)
 
