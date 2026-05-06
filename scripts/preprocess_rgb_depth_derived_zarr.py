@@ -42,6 +42,7 @@ class ModelBundle:
     sam_predictor: object | None = None
     raft: object | None = None
     raft_weights: object | None = None
+    raft_transforms: object | None = None
     torch: object | None = None
     device: str = "cpu"
 
@@ -92,6 +93,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--flow-lag", type=int, default=5)
     parser.add_argument("--flow-edge-clamp", type=float, default=10.0)
     parser.add_argument("--flow-edge-gamma", type=float, default=1.0)
+    parser.add_argument(
+        "--depth-flow-mode",
+        choices=["depth_diff_sobel", "raft_depth_pseudo"],
+        default="depth_diff_sobel",
+        help="Depth flow-edge strategy. Default avoids RAFT on fake RGB depth images.",
+    )
     parser.add_argument(
         "--write-flow-edge-sweep-png",
         default=None,
@@ -248,7 +255,7 @@ def require_raft(args: argparse.Namespace) -> ModelBundle:
             "If this machine has no internet, pre-cache the weights in "
             "$TORCH_HOME/hub/checkpoints or run once on a machine with network access."
         ) from exc
-    return ModelBundle(raft=model, raft_weights=weights, torch=torch, device=device)
+    return ModelBundle(raft=model, raft_weights=weights, raft_transforms=weights.transforms(), torch=torch, device=device)
 
 
 def yolo_person_boxes(yolo, rgb: np.ndarray, confidence: float) -> np.ndarray:
@@ -420,16 +427,14 @@ def depth_to_rgb_like(depth: np.ndarray) -> np.ndarray:
     return np.repeat(image[..., None], 3, axis=-1)
 
 
-def image_to_raft_tensor(torch, image: np.ndarray, device: str):
-    tensor = torch.from_numpy(image).permute(2, 0, 1).float()[None] / 127.5 - 1.0
-    return tensor.to(device)
-
-
 def raft_flow(bundle: ModelBundle, img1: np.ndarray, img2: np.ndarray) -> np.ndarray:
     torch = bundle.torch
     with torch.inference_mode():
-        t1 = image_to_raft_tensor(torch, img1, bundle.device)
-        t2 = image_to_raft_tensor(torch, img2, bundle.device)
+        t1 = torch.from_numpy(np.asarray(img1)).permute(2, 0, 1).float()[None]
+        t2 = torch.from_numpy(np.asarray(img2)).permute(2, 0, 1).float()[None]
+        t1, t2 = bundle.raft_transforms(t1, t2)
+        t1 = t1.to(bundle.device)
+        t2 = t2.to(bundle.device)
         flow = bundle.raft(t1, t2)[-1][0].detach().cpu().numpy()
     return np.moveaxis(flow, 0, -1)
 
@@ -449,12 +454,32 @@ def flow_edge_map(flow: np.ndarray, clamp_value: float, gamma: float) -> tuple[n
     return magnitude.astype(np.float16), edge
 
 
-def build_flow_edge_arrays(source_group, bundle: ModelBundle, args: argparse.Namespace) -> dict[str, np.ndarray]:
-    rgb = np.asarray(source_group["rgb_masked"][:])
-    depth = np.asarray(source_group["depth_masked"][:])
+def scalar_edge_map(values: np.ndarray, clamp_value: float, gamma: float) -> np.ndarray:
+    if cv2 is None:
+        raise RuntimeError("OpenCV is required for Sobel flow-edge maps.")
+    values = np.asarray(values, dtype=np.float32)
+    sx = cv2.Sobel(values, cv2.CV_32F, 1, 0, ksize=3)
+    sy = cv2.Sobel(values, cv2.CV_32F, 0, 1, ksize=3)
+    edge = np.sqrt(np.square(sx) + np.square(sy))
+    edge = np.clip(edge, 0.0, float(clamp_value))
+    if float(gamma) != 1.0:
+        normalized = edge / max(float(clamp_value), 1e-6)
+        edge = np.power(normalized, float(gamma)) * float(clamp_value)
+    return edge.astype(np.float16)
+
+
+def build_flow_edge_arrays(raw_group, masked_group, bundle: ModelBundle, args: argparse.Namespace) -> dict[str, np.ndarray]:
+    rgb = np.asarray(raw_group["rgb"][:])
+    depth = np.asarray(masked_group["depth_masked"][:])
+    masks = np.asarray(masked_group["human_mask"][:]).astype(bool)
+    masked_rgb_shape = masked_group["rgb_masked"].shape
+    if rgb.shape[0] != masked_rgb_shape[0]:
+        start_offset = int(masked_group.attrs.get("source_start_frame_offset", 0) or 0)
+        rgb = rgb[start_offset : start_offset + masked_rgb_shape[0]]
     if args.mask_max_frames is not None:
         rgb = rgb[: int(args.mask_max_frames)]
         depth = depth[: int(args.mask_max_frames)]
+        masks = masks[: int(args.mask_max_frames)]
     n = rgb.shape[0]
     flow_mag_rgb = np.zeros((n, rgb.shape[1], rgb.shape[2]), dtype=np.float16)
     flow_edge_rgb = np.zeros_like(flow_mag_rgb)
@@ -466,10 +491,19 @@ def build_flow_edge_arrays(source_group, bundle: ModelBundle, args: argparse.Nam
     for idx in iterator:
         flow_rgb = raft_flow(bundle, rgb[idx - int(args.flow_lag)], rgb[idx])
         flow_mag_rgb[idx], flow_edge_rgb[idx] = flow_edge_map(flow_rgb, args.flow_edge_clamp, args.flow_edge_gamma)
-        d1 = depth_to_rgb_like(depth[idx - int(args.flow_lag)])
-        d2 = depth_to_rgb_like(depth[idx])
-        flow_depth = raft_flow(bundle, d1, d2)
-        flow_mag_depth[idx], flow_edge_depth[idx] = flow_edge_map(flow_depth, args.flow_edge_clamp, args.flow_edge_gamma)
+        flow_mag_rgb[idx][~masks[idx]] = 0
+        flow_edge_rgb[idx][~masks[idx]] = 0
+        if args.depth_flow_mode == "raft_depth_pseudo":
+            d1 = depth_to_rgb_like(depth[idx - int(args.flow_lag)])
+            d2 = depth_to_rgb_like(depth[idx])
+            flow_depth = raft_flow(bundle, d1, d2)
+            flow_mag_depth[idx], flow_edge_depth[idx] = flow_edge_map(flow_depth, args.flow_edge_clamp, args.flow_edge_gamma)
+        else:
+            depth_diff = np.abs(depth[idx].astype(np.float32) - depth[idx - int(args.flow_lag)].astype(np.float32))
+            flow_mag_depth[idx] = np.clip(depth_diff, 0.0, float(args.flow_edge_clamp)).astype(np.float16)
+            flow_edge_depth[idx] = scalar_edge_map(depth_diff, args.flow_edge_clamp, args.flow_edge_gamma)
+        flow_mag_depth[idx][~masks[idx]] = 0
+        flow_edge_depth[idx][~masks[idx]] = 0
     return {
         "flow_magnitude_rgb": flow_mag_rgb,
         "flow_edge_rgb": flow_edge_rgb,
@@ -519,10 +553,6 @@ def write_smoke_png(
     ]:
         if key in arrays:
             value = arrays[key][idx]
-            if value.ndim == 3 and value.shape[-1] == 3 and value.dtype.kind in {"i", "u"}:
-                value = np.clip(value, 0, 255).astype(np.uint8)
-            elif value.ndim == 3:
-                value = np.mean(value.astype(np.float32), axis=-1)
             panels.append((key, value))
     cols = 5
     rows = int(np.ceil(len(panels) / cols))
@@ -530,10 +560,11 @@ def write_smoke_png(
     axes = np.asarray(axes).reshape(-1)
     for ax, (title, image) in zip(axes, panels):
         ax.set_title(title)
-        if image.ndim == 2:
-            ax.imshow(image, cmap="magma")
+        display_image, cmap, kwargs = prepare_panel_for_display(title, image)
+        if display_image.ndim == 2:
+            ax.imshow(display_image, cmap=cmap or "magma", **kwargs)
         else:
-            ax.imshow(image)
+            ax.imshow(display_image)
         ax.axis("off")
     for ax in axes[len(panels) :]:
         ax.axis("off")
@@ -557,6 +588,37 @@ def display_edge(edge: np.ndarray, clamp_value: float, gamma: float) -> np.ndarr
     if float(gamma) != 1.0:
         edge = np.power(edge, float(gamma))
     return np.clip(edge, 0.0, 1.0)
+
+
+def prepare_panel_for_display(title: str, image: np.ndarray) -> tuple[np.ndarray, str, dict]:
+    image = np.asarray(image)
+    lower_title = title.lower()
+    kwargs: dict = {}
+    if image.ndim == 3 and image.shape[-1] == 3 and image.dtype.kind in {"i", "u"} and "motion" not in lower_title:
+        return np.clip(image, 0, 255).astype(np.uint8), "", kwargs
+    if image.ndim == 3:
+        if "motion" in lower_title:
+            image = np.mean(image.astype(np.float32), axis=-1)
+        else:
+            return np.clip(image, 0, 255).astype(np.uint8), "", kwargs
+    image = image.astype(np.float32)
+    finite = image[np.isfinite(image)]
+    if finite.size == 0:
+        return image, "magma", kwargs
+    if "motion" in lower_title:
+        vmax = max(float(np.percentile(np.abs(finite), 99)), 1e-6)
+        kwargs.update({"vmin": -vmax, "vmax": vmax})
+        return image, "coolwarm", kwargs
+    if "flow_edge" in lower_title or "flow_magnitude" in lower_title:
+        vmax = max(float(np.percentile(finite, 99)), 1e-6)
+        kwargs.update({"vmin": 0.0, "vmax": vmax})
+        return image, "magma", kwargs
+    if "depth" in lower_title:
+        nonzero = finite[np.abs(finite) > 0]
+        if nonzero.size:
+            kwargs.update({"vmin": float(np.percentile(nonzero, 2)), "vmax": float(np.percentile(nonzero, 98))})
+        return image, "magma", kwargs
+    return image, "magma", kwargs
 
 
 def write_flow_edge_sweep_png(path: Path, arrays: dict[str, np.ndarray], args: argparse.Namespace) -> None:
@@ -633,7 +695,7 @@ def output_arrays_for_representation(zarr, raw_group, attrs: dict, task_name: st
         return motion_jelly_mean3(zarr, Path(args.mask_source_root), attrs, task_name, args)
     if args.representation == "flow_edge_raft":
         masked = load_masked_task(zarr, Path(args.mask_source_root), attrs, task_name)
-        return build_flow_edge_arrays(masked, bundle, args)
+        return build_flow_edge_arrays(raw_group, masked, bundle, args)
     raise ValueError(args.representation)
 
 
@@ -709,6 +771,7 @@ def main() -> None:
                     "flow_lag": int(args.flow_lag),
                     "flow_edge_clamp": float(args.flow_edge_clamp),
                     "flow_edge_gamma": float(args.flow_edge_gamma),
+                    "depth_flow_mode": args.depth_flow_mode,
                     "motion_window_seconds": float(args.motion_window_seconds),
                     "motion_stride_seconds": float(args.motion_stride_seconds),
                 }
@@ -763,7 +826,8 @@ def main() -> None:
                     args,
                     source_start_frame=plot_start_frame,
                 )
-                write_flow_edge_sweep_png(Path(args.write_flow_edge_sweep_png), smoke_arrays, args)
+                if args.write_flow_edge_sweep_png:
+                    write_flow_edge_sweep_png(Path(args.write_flow_edge_sweep_png), smoke_arrays, args)
                 wrote_smoke = True
             elif args.write_flow_edge_sweep_png and not wrote_smoke:
                 write_flow_edge_sweep_png(Path(args.write_flow_edge_sweep_png), arrays, args)
