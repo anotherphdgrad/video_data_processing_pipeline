@@ -960,6 +960,8 @@ On the current local partial extraction, this checks `14` stores and reports `16
 
 The next-stage derived script writes participant-wise Zarr stores with the same split-critical metadata (`base_subject_id`, `group`, `task_id`, `view_type`, `stress_label`, timestamps, and source frame indices).
 
+For smoke/debug outputs, use the repo-local ignored folder `derived_smoke/` rather than `/tmp` so artifacts are easy to inspect and not silently lost between sessions.
+
 ### 1. Human-Masked RGB/Depth
 
 YOLO proposes person boxes from RGB frames, SAM2 refines the human mask, and the same mask is applied to both RGB and depth.
@@ -1012,6 +1014,8 @@ python scripts/preprocess_rgb_depth_derived_zarr.py \
   --overwrite
 ```
 
+When a matching masked `jelly` task is available for the same participant and view, the smoke PNG also includes `motion_jelly_mean3_motion_rgb` and `motion_jelly_mean3_motion_depth` panels for side-by-side comparison against consecutive-frame motion.
+
 The jelly-baseline variant uses the mean over the first three 30-second jelly windows for the same participant and view:
 
 ```bash
@@ -1029,7 +1033,7 @@ python scripts/preprocess_rgb_depth_derived_zarr.py \
 
 ### 3. RAFT Flow-Edge Representations
 
-RAFT comes from `torchvision.models.optical_flow`; no separate RAFT repo is required. For depth, the masked depth frame is robustly normalized into a 3-channel pseudo-image before RAFT.
+RAFT comes from `torchvision.models.optical_flow`; no separate RAFT repo is required. RGB flow is computed on raw RGB frames using torchvision's official RAFT transforms, then the human mask is applied to the resulting flow magnitude and edge maps. Depth defaults to `depth_diff_sobel`, which computes Sobel edges on masked depth differences instead of running RAFT on fake RGB depth images.
 
 ```bash
 python scripts/preprocess_rgb_depth_derived_zarr.py \
@@ -1042,9 +1046,117 @@ python scripts/preprocess_rgb_depth_derived_zarr.py \
   --views frontal \
   --max-task-groups 1 \
   --flow-lag 5 \
-  --flow-edge-clamp 10 \
+  --flow-edge-clamp 2 \
+  --flow-edge-gamma 0.5 \
   --write-smoke-png assets/derived_feature_visual_checks/0001_frontal_stress_flow_edge_smoke.png \
   --overwrite
 ```
 
 The flow-edge smoke PNG includes raw RGB/depth, masked RGB/depth, motion-difference panels, RAFT flow magnitude, and Sobel flow-edge maps when the masked source is available.
+
+## End-To-End Feature Training Pipeline
+
+The full selected-feature pipeline is implemented in:
+
+```bash
+scripts/run_rgb_depth_feature_training_pipeline.py
+```
+
+Default inputs and outputs:
+
+- raw input: `OUD_Stress_preprocessed/rgb_depth_zarr_5hz_raw_zarr2`
+- derived features: `processed_rgb_depth_features/`
+- model/results output: `outputs_rgb_depth/`
+- view: `frontal`
+- windowing: `30s` windows at `5 Hz` (`150` frames) with `15s` stride (`75` frames)
+- flow edge: `lag=5`, `clamp=2`, `gamma=0.5`, `depth_flow_mode=depth_diff_sobel`
+- folds: `GroupKFold(n_splits=5)` grouped by `base_subject_id`, inner `GroupShuffleSplit(test_size=0.2, random_state=42 + fold_id)`
+
+The selected single-representation training inputs are:
+
+- `masked_rgb`
+- `masked_depth`
+- `motion_prev_rgb`
+- `motion_prev_depth`
+- `flow_edge_rgb`
+- `flow_edge_depth`
+
+The pipeline stages are:
+
+- `validate_raw`: validates raw task Zarr stores and writes `processed_rgb_depth_features/manifests/raw_validation_report.csv`
+- `derive_masked`: writes `processed_rgb_depth_features/human_masked_sam2_yolo`
+- `derive_motion`: writes `processed_rgb_depth_features/motion_previous`
+- `derive_flow_edge`: writes `processed_rgb_depth_features/flow_edge_raft`
+- `build_windows`: writes `processed_rgb_depth_features/manifests/window_manifest.csv`, included/excluded participant CSVs, and mask/window drop counts
+- `train`: trains `temporal_pooling_cnn` and `small_frame_cnn_transformer` per feature
+- `summarize`: writes aggregate concise results under `outputs_rgb_depth/all_window_mode_results_concise.csv`
+
+Smoke-test one participant first:
+
+```bash
+python scripts/run_rgb_depth_feature_training_pipeline.py \
+  --stage all \
+  --raw-root OUD_Stress_preprocessed/rgb_depth_zarr_5hz_raw_zarr2 \
+  --feature-root processed_rgb_depth_features \
+  --run-root outputs_rgb_depth \
+  --smoke-participant 0001 \
+  --max-task-groups 3 \
+  --max-folds 1 \
+  --max-windows 40 \
+  --features masked_rgb \
+  --models temporal_pooling_cnn \
+  --epochs 2 \
+  --batch-size 2 \
+  --num-workers 0 \
+  --debug-allow-window-split \
+  --sam2-config "$SAM2_CONFIG" \
+  --sam2-checkpoint "$SAM2_CKPT" \
+  --overwrite
+```
+
+`--debug-allow-window-split` is only for the one-participant smoke run. Full reported results should omit it so the split remains participant-disjoint.
+
+For the full run:
+
+```bash
+python scripts/run_rgb_depth_feature_training_pipeline.py \
+  --stage all \
+  --raw-root OUD_Stress_preprocessed/rgb_depth_zarr_5hz_raw_zarr2 \
+  --feature-root processed_rgb_depth_features \
+  --run-root outputs_rgb_depth \
+  --sam2-config "$SAM2_CONFIG" \
+  --sam2-checkpoint "$SAM2_CKPT"
+```
+
+If the derived Zarr features are already complete, resume from windowing/training:
+
+```bash
+python scripts/run_rgb_depth_feature_training_pipeline.py \
+  --stage train \
+  --raw-root OUD_Stress_preprocessed/rgb_depth_zarr_5hz_raw_zarr2 \
+  --feature-root processed_rgb_depth_features \
+  --run-root outputs_rgb_depth
+```
+
+The window manifest applies tiered production mask-quality filtering before folds:
+
+- `clean`: missing masks `<= 10%`, direct YOLO+SAM2 masks `>= 70%`, max carry-forward age `<= 10` frames, stable mask area
+- `usable`: missing masks `<= 25%`, direct YOLO+SAM2 masks `>= 50%`, max carry-forward age `<= 15` frames, reasonably stable mask area
+- `inspect`: missing masks `<= 50%`, direct YOLO+SAM2 masks `>= 25%`, max carry-forward age `<= 15` frames, used for debugging/inspection rather than reported production runs
+- `drop`: anything worse, including mean mask area outside `0.01` to `0.70` or almost-empty masked RGB/depth
+
+Production defaults keep only `clean usable`:
+
+```bash
+--allowed-mask-quality-tiers clean usable
+```
+
+For smoke/debug runs only, include inspect windows:
+
+```bash
+--allowed-mask-quality-tiers clean usable inspect
+```
+
+Use `--max-missing-mask-frames-per-window 0 --max-missing-mask-fraction-per-window 0` for strict no-missing-mask windows.
+
+Participants are filtered after window generation, and only participants with both label `0` and label `1` windows are kept for fold creation. Window-level drop counts are written to `processed_rgb_depth_features/manifests/window_filter_summary.csv`.

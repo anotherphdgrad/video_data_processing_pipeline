@@ -92,7 +92,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--raft-weights", default="C_T_V2")
     parser.add_argument("--flow-lag", type=int, default=5)
     parser.add_argument("--flow-edge-clamp", type=float, default=10.0)
-    parser.add_argument("--flow-edge-gamma", type=float, default=1.0)
+    parser.add_argument("--flow-edge-gamma", type=float, default=0.5)
     parser.add_argument(
         "--depth-flow-mode",
         choices=["depth_diff_sobel", "raft_depth_pseudo"],
@@ -413,6 +413,32 @@ def motion_jelly_mean3(zarr, mask_source_root: Path, attrs: dict, task_name: str
     }
 
 
+def prefix_arrays(arrays: dict[str, np.ndarray], prefix: str) -> dict[str, np.ndarray]:
+    return {f"{prefix}{key}": value for key, value in arrays.items()}
+
+
+PANEL_LABELS = {
+    "human_mask": "Human Mask",
+    "motion_rgb": "Motion (Prev Frame) RGB",
+    "motion_depth": "Motion (Prev Frame) Depth",
+    "motion_jelly_mean3_motion_rgb": "Motion (Jelly Mean3) RGB",
+    "motion_jelly_mean3_motion_depth": "Motion (Jelly Mean3) Depth",
+    "flow_edge_rgb": "Flow Edge RGB",
+    "flow_edge_depth": "Flow Edge Depth",
+}
+
+
+SMOKE_PANEL_ORDER = (
+    "human_mask",
+    "motion_rgb",
+    "motion_depth",
+    "motion_jelly_mean3_motion_rgb",
+    "motion_jelly_mean3_motion_depth",
+    "flow_edge_rgb",
+    "flow_edge_depth",
+)
+
+
 def depth_to_rgb_like(depth: np.ndarray) -> np.ndarray:
     depth = np.asarray(depth, dtype=np.float32)
     finite = depth[np.isfinite(depth) & (depth > 0)]
@@ -541,20 +567,11 @@ def write_smoke_png(
     rgb_title = "Raw RGB" if rgb_key == "rgb" else "Masked RGB Source"
     depth_title = "Raw Depth" if depth_key == "depth" else "Masked Depth Source"
     panels = [(rgb_title, raw_rgb), (depth_title, raw_depth)]
-    for key in [
-        "human_mask",
-        "rgb_masked",
-        "depth_masked",
-        "motion_rgb",
-        "motion_depth",
-        "flow_magnitude_rgb",
-        "flow_edge_rgb",
-        "flow_edge_depth",
-    ]:
+    for key in SMOKE_PANEL_ORDER:
         if key in arrays:
             value = arrays[key][idx]
-            panels.append((key, value))
-    cols = 5
+            panels.append((PANEL_LABELS.get(key, key), value))
+    cols = min(5, len(panels))
     rows = int(np.ceil(len(panels) / cols))
     fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 4 * rows))
     axes = np.asarray(axes).reshape(-1)
@@ -679,6 +696,12 @@ def add_context_arrays_for_smoke(
         }
         if "motion_rgb" not in arrays and "motion_depth" not in arrays:
             context.update(motion_previous(context["rgb_masked"], context["depth_masked"]))
+        if "motion_jelly_mean3_rgb" not in context:
+            try:
+                jelly_motion = motion_jelly_mean3(zarr, Path(args.mask_source_root), attrs, task_name, args)
+                context.update(prefix_arrays(jelly_motion, "motion_jelly_mean3_"))
+            except Exception as exc:  # noqa: BLE001 - keep the main smoke visualization available.
+                context["motion_jelly_mean3_error"] = np.asarray([str(exc)])
         context.update(arrays)
         return context, masked
     except Exception:

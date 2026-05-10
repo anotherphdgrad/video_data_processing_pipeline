@@ -30,6 +30,11 @@ share/python-wheels/
 *.egg
 MANIFEST
 processed_rgb_depth_zarr_5hz_raw
+derived_smoke/
+processed_rgb_depth_features/
+outputs_rgb_depth/
+outputs_rgb_depth_fm/
+checkpoints/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
