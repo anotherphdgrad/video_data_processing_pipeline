@@ -34,6 +34,8 @@ derived_smoke/
 processed_rgb_depth_features/
 outputs_rgb_depth/
 outputs_rgb_depth_fm/
+outputs_rgb_depth_fm_downstream_search/
+outputs_rgb_depth_fm_downstream_search_smoke/
 checkpoints/
 
 # PyInstaller
