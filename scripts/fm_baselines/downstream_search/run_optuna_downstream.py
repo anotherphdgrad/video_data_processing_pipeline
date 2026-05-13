@@ -215,18 +215,19 @@ def evaluate_best_config(store, folds, model_family: str, best_params: dict, com
     return pd.DataFrame(metric_rows), pd.concat(prediction_frames, ignore_index=True)
 
 
-def summarize_metrics(metric_df: pd.DataFrame, run_dir: Path, args: argparse.Namespace) -> pd.DataFrame:
+def summarize_metrics(metric_df: pd.DataFrame, run_dir: Path, args: argparse.Namespace, seq_len_by_combo: dict | None = None) -> pd.DataFrame:
     rows = []
     for (encoder, feature, model_family), group in metric_df.groupby(["encoder", "feature", "model_family"]):
+        seq_len = (seq_len_by_combo or {}).get((encoder, feature), 150)
         row = {
             "model_name": f"{encoder}_{feature}_{model_family}",
             "module_name": "RGBDepth-FM-Framewise-Downstream",
-            "window_strategy": "30s window / 15s overlap; all 150 cached frame embeddings",
+            "window_strategy": f"30s window / 15s overlap; {seq_len} cached frame embeddings",
             "input_mode": feature,
             "representation_family": "Framewise foundation model embedding downstream search",
-            "representation_equation": f"{encoder}:{feature}:framewise_150:{model_family}",
+            "representation_equation": f"{encoder}:{feature}:framewise_{seq_len}:{model_family}",
             "sequence_pooling": model_family,
-            "sequence_length": 150,
+            "sequence_length": seq_len,
             "optuna_trials": int(args.optuna_trials),
             "n_folds": int(args.max_folds or args.n_splits),
             "person_disjoint_setting": "GroupKFold(base_subject_id) with GroupShuffleSplit validation",
@@ -268,6 +269,11 @@ def main() -> None:
 
     available = discover_embedding_stores(embedding_root)
     available.to_csv(run_dir / "available_embedding_stores.csv", index=False)
+    seq_len_by_combo: dict[tuple[str, str], int] = {
+        (row.encoder, row.feature): row.frames_per_window
+        for row in available.itertuples()
+        if hasattr(row, "frames_per_window")
+    }
     metric_frames = []
     pred_frames = []
     assignment_frames = []
@@ -323,7 +329,7 @@ def main() -> None:
     all_metrics.to_csv(run_dir / "per_fold_metrics.csv", index=False)
     all_preds.to_csv(run_dir / "fold_predictions.csv", index=False)
     all_assignments.to_csv(run_dir / "fold_assignments.csv", index=False)
-    summarize_metrics(all_metrics, run_dir, args)
+    summarize_metrics(all_metrics, run_dir, args, seq_len_by_combo=seq_len_by_combo)
     save_json(run_dir / "run_summary.json", {"elapsed_seconds": time.time() - started, "num_metric_rows": int(len(all_metrics))})
     aggregate_results(output_root)
     print(f"Wrote downstream search run: {run_dir}")

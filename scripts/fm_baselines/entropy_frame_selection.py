@@ -83,9 +83,10 @@ def select_top_k_frames(X: np.ndarray, top_k: int, entropy_method: str = "shanno
         embeddings = X[window_idx]  # (seq_len, embedding_dim)
         entropy_scores = compute_embedding_entropy(embeddings, method=entropy_method)
         
-        # Select indices with top-K entropy scores
-        top_indices = np.argsort(entropy_scores)[-top_k:][::-1]  # Descending order
-        
+        # Select top-K by entropy, then restore original temporal order so that
+        # sequence models (RNN, TCN) receive frames in chronological sequence.
+        top_indices = np.sort(np.argsort(entropy_scores)[-top_k:])
+
         selected_X[window_idx] = embeddings[top_indices]
         selected_indices[window_idx] = top_indices
     
@@ -118,30 +119,40 @@ def process_zarr_store(
     input_store = zarr.open(str(input_store_path), mode="r")
     X = input_store["X"][:]  # (num_windows, seq_len, embedding_dim)
     y = input_store["y"][:]
-    
+
     original_seq_len = X.shape[1]
     print(f"  Input shape: {X.shape}")
-    
-    # Standardize if requested (helps entropy computation)
+
+    # Standardize only for entropy scoring — keep original embeddings for storage.
+    # The downstream search (train_eval.py) re-standardizes fold-locally; writing
+    # globally-standardized values here would cause double standardization.
+    X_for_scoring = X
     if standardize:
         X_flat = X.reshape(-1, X.shape[-1])
         scaler = StandardScaler()
-        X_flat = scaler.fit_transform(X_flat)
-        X = X_flat.reshape(X.shape)
-    
-    # Select frames by entropy
-    X_selected, frame_indices = select_top_k_frames(X, top_k, entropy_method=entropy_method)
+        X_for_scoring = scaler.fit_transform(X_flat).reshape(X.shape)
+
+    # Select frames by entropy (scored on standardized copy, sliced from originals)
+    _X_scored, frame_indices = select_top_k_frames(X_for_scoring, top_k, entropy_method=entropy_method)
+    X_selected = np.stack([X[i, frame_indices[i]] for i in range(len(X))], axis=0)
     
     print(f"  Output shape: {X_selected.shape}")
     print(f"  Compression: {original_seq_len} → {top_k} frames ({100*top_k/original_seq_len:.1f}%)")
     
     # Create output zarr store by copying then updating X
     output_store_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     # Copy entire zarr directory
     if output_store_path.exists():
         shutil.rmtree(output_store_path)
     shutil.copytree(input_store_path, output_store_path)
+
+    # Copy sibling metadata CSV required by load_embedding_store / discover_embedding_stores
+    feature_name = input_store_path.stem
+    src_meta = input_store_path.parent / f"{feature_name}_metadata.csv"
+    dst_meta = output_store_path.parent / f"{feature_name}_metadata.csv"
+    if src_meta.exists():
+        shutil.copy2(src_meta, dst_meta)
     
     # Re-open and replace X dataset with selected frames
     output_store = zarr.open_group(str(output_store_path), mode="r+")
