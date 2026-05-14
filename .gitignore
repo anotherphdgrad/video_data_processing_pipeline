@@ -2,6 +2,7 @@
 __pycache__/
 *.py[codz]
 *$py.class
+outputs_downstream_pub/
 
 # C extensions
 *.so
