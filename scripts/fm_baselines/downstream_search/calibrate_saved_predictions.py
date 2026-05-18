@@ -9,13 +9,17 @@ Compared strategies per fold:
 
 1. ``current_saved_threshold``
    Uses the saved prediction/threshold from the original downstream run.
-2. ``val_platt_lr_0p5``
+2. ``val_adaptive_threshold``
+   Sweeps 100 thresholds within the val-score percentile range [5th, 95th]
+   for finer resolution where scores actually lie, then applies the
+   best-balanced-accuracy threshold to all splits.  No calibration model.
+3. ``val_platt_lr_0p5``
    Fits a one-dimensional logistic-regression/Platt calibrator on that fold's
    validation scores only, then predicts stress at calibrated score >= 0.5.
-3. ``val_platt_lr_val_threshold``
+4. ``val_platt_lr_val_threshold``
    Uses the same validation-only calibrator, then selects a balanced-accuracy
-   threshold on calibrated validation scores and applies that threshold to
-   train/val/test.
+   threshold on calibrated validation scores (adaptive 100-pt grid) and
+   applies that threshold to train/val/test.
 """
 
 from __future__ import annotations
@@ -54,6 +58,9 @@ METRIC_COLS = [
 ]
 
 THRESHOLDS = np.linspace(0.05, 0.95, 19)
+N_ADAPTIVE_THRESHOLDS = 100
+ADAPTIVE_PERCENTILE_LO = 5.0
+ADAPTIVE_PERCENTILE_HI = 95.0
 
 
 @dataclass(frozen=True)
@@ -134,6 +141,25 @@ def find_best_threshold(y_true: np.ndarray, y_score: np.ndarray) -> tuple[float,
     best_threshold = 0.5
     best_score = -np.inf
     for threshold in THRESHOLDS:
+        score = float(balanced_accuracy_score(y_true, apply_threshold(y_score, float(threshold))))
+        if score > best_score:
+            best_score = score
+            best_threshold = float(threshold)
+    return best_threshold, best_score
+
+
+def find_best_threshold_adaptive(y_true: np.ndarray, y_score: np.ndarray) -> tuple[float, float]:
+    """Sweep N_ADAPTIVE_THRESHOLDS points within the [5th, 95th] percentile of
+    y_score for finer resolution where scores actually lie.  Falls back to the
+    global THRESHOLDS grid when the percentile range is degenerate."""
+    lo = float(np.percentile(y_score, ADAPTIVE_PERCENTILE_LO))
+    hi = float(np.percentile(y_score, ADAPTIVE_PERCENTILE_HI))
+    if hi - lo < 1e-6:
+        return find_best_threshold(y_true, y_score)
+    grid = np.linspace(lo, hi, N_ADAPTIVE_THRESHOLDS)
+    best_threshold = float(grid[len(grid) // 2])
+    best_score = -np.inf
+    for threshold in grid:
         score = float(balanced_accuracy_score(y_true, apply_threshold(y_score, float(threshold))))
         if score > best_score:
             best_score = score
@@ -314,6 +340,10 @@ def process_combo(combo: ComboInfo, pred_path: Path, epsilon: float) -> tuple[li
         val_df = fold_df[fold_df["split"] == "val"].copy()
         val_y = val_df["label"].to_numpy(dtype=np.int64)
         val_scores = val_df["score"].to_numpy(dtype=np.float64)
+
+        # Adaptive threshold on raw val scores (no calibration model needed)
+        adaptive_val_threshold, adaptive_val_ba = find_best_threshold_adaptive(val_y, val_scores)
+
         calibrator = fit_platt_lr(val_scores, val_y, epsilon=epsilon)
 
         if calibrator is None:
@@ -325,7 +355,8 @@ def process_combo(combo: ComboInfo, pred_path: Path, epsilon: float) -> tuple[li
         else:
             calibrator_status = "ok"
             calibrated_val_scores = calibrated_scores(calibrator, val_scores, epsilon=epsilon)
-            calibrated_val_threshold, calibrated_val_ba = find_best_threshold(val_y, calibrated_val_scores)
+            # Use adaptive grid for finer threshold resolution on calibrated scores
+            calibrated_val_threshold, calibrated_val_ba = find_best_threshold_adaptive(val_y, calibrated_val_scores)
             coef = float(calibrator.coef_[0, 0])
             intercept = float(calibrator.intercept_[0])
 
@@ -340,10 +371,12 @@ def process_combo(combo: ComboInfo, pred_path: Path, epsilon: float) -> tuple[li
                 "n_val": int(len(val_df)),
                 "n_val_stress": int(val_y.sum()),
                 "n_val_nonstress": int((1 - val_y).sum()),
-                "coef": coef,
-                "intercept": intercept,
-                "val_selected_threshold": calibrated_val_threshold,
-                "val_selected_balanced_accuracy": calibrated_val_ba,
+                "adaptive_val_threshold": adaptive_val_threshold,
+                "adaptive_val_ba": adaptive_val_ba,
+                "platt_coef": coef,
+                "platt_intercept": intercept,
+                "platt_val_threshold": calibrated_val_threshold,
+                "platt_val_balanced_accuracy": calibrated_val_ba,
                 "epsilon": float(epsilon),
             }
         )
@@ -375,6 +408,32 @@ def process_combo(combo: ComboInfo, pred_path: Path, epsilon: float) -> tuple[li
                 score=original_score,
                 pred=original_pred,
                 threshold=original_threshold,
+                calibrator_status="not_applicable",
+            )
+
+            # Adaptive threshold on original scores — no calibration model needed
+            adaptive_pred = apply_threshold(original_score, adaptive_val_threshold)
+            add_prediction_rows(
+                rows=pred_rows,
+                combo=combo,
+                fold_id=fold_id,
+                split_df=split_df,
+                strategy="val_adaptive_threshold",
+                score=original_score,
+                pred=adaptive_pred,
+                threshold=adaptive_val_threshold,
+                calibrator_status="not_applicable",
+            )
+            add_metric_row(
+                rows=metric_rows,
+                combo=combo,
+                fold_id=fold_id,
+                split=split,
+                split_df=split_df,
+                strategy="val_adaptive_threshold",
+                score=original_score,
+                pred=adaptive_pred,
+                threshold=adaptive_val_threshold,
                 calibrator_status="not_applicable",
             )
 
@@ -476,7 +535,7 @@ def build_concise_summary(test_summary: pd.DataFrame) -> pd.DataFrame:
                 "representation_family": "saved downstream score calibration",
                 "representation_equation": f"{row['encoder']}:{row['feature']}:{row['model_family']}:{row['strategy']}",
                 "sequence_pooling": "no neural retraining; validation-only Platt/LR audit",
-                "sequence_length": 150,
+                "sequence_length": None,
                 "optuna_trials": 0,
                 "n_folds": int(row["n_folds"]),
                 "person_disjoint_setting": "Existing GroupKFold(base_subject_id) folds; calibration fit on validation split only",
@@ -579,6 +638,7 @@ def main() -> None:
         "n_failures": len(failures),
         "strategies": [
             "current_saved_threshold",
+            "val_adaptive_threshold",
             "val_platt_lr_0p5",
             "val_platt_lr_val_threshold",
         ],
@@ -614,6 +674,23 @@ def main() -> None:
     ]
     print("\nTop calibrated audit rows by test AUC:")
     print(test_summary[display_cols].head(20).to_string(index=False))
+
+    # Show mean delta vs baseline across all combos
+    _baseline = test_summary[test_summary["strategy"] == "current_saved_threshold"][
+        ["encoder", "feature", "model_family", "auc_mean", "balanced_accuracy_mean"]
+    ].rename(columns={"auc_mean": "base_auc", "balanced_accuracy_mean": "base_ba"})
+    _other = test_summary[test_summary["strategy"] != "current_saved_threshold"].copy()
+    _merged = _other.merge(_baseline, on=["encoder", "feature", "model_family"], how="left")
+    if not _merged.empty:
+        _merged["delta_auc"] = _merged["auc_mean"] - _merged["base_auc"]
+        _merged["delta_ba"] = _merged["balanced_accuracy_mean"] - _merged["base_ba"]
+        delta_summary = (
+            _merged.groupby("strategy")[["delta_auc", "delta_ba"]]
+            .mean()
+            .sort_values("delta_ba", ascending=False)
+        )
+        print("\nMean delta vs current_saved_threshold (positive = improvement):")
+        print(delta_summary.round(4).to_string())
 
 
 if __name__ == "__main__":
