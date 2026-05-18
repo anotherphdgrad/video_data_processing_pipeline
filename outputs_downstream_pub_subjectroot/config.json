@@ -1,0 +1,18 @@
+{
+  "embedding_root": "/home/harshit/2024/video_data_processing_pipeline/outputs_rgb_depth_fm/embeddings_zarr2_entropy75",
+  "input_root": "/home/harshit/2024/video_data_processing_pipeline/outputs_downstream_pub",
+  "output_root": "/home/harshit/2024/video_data_processing_pipeline/outputs_downstream_pub_subjectroot",
+  "encoders": [
+    "dinov2"
+  ],
+  "features": [
+    "motion_prev_rgb"
+  ],
+  "model_families": [
+    "transformer_encoder"
+  ],
+  "min_windows_for_subject_norm": 3,
+  "device": "cuda",
+  "n_combos": 1,
+  "n_failures": 0
+}

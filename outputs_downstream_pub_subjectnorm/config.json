@@ -1,0 +1,24 @@
+{
+  "embedding_root": "/home/harshit/2024/video_data_processing_pipeline/outputs_rgb_depth_fm/embeddings_zarr2_entropy75",
+  "input_root": "/home/harshit/2024/video_data_processing_pipeline/outputs_downstream_pub",
+  "output_root": "/home/harshit/2024/video_data_processing_pipeline/outputs_downstream_pub_subjectnorm",
+  "encoders": [
+    "imagebind",
+    "omnivore",
+    "dinov2"
+  ],
+  "features": [
+    "motion_prev_rgb",
+    "motion_prev_depth"
+  ],
+  "model_families": [
+    "attn_pool_mlp",
+    "rnn_attn",
+    "tcn",
+    "transformer_encoder"
+  ],
+  "min_windows_for_subject_norm": 3,
+  "device": "cuda",
+  "n_combos": 24,
+  "n_failures": 0
+}
