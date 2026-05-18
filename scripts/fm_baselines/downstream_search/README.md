@@ -76,3 +76,44 @@ The aggregate concise summary is written to:
 ```text
 outputs_rgb_depth_fm_downstream_search/all_window_mode_results_concise.csv
 ```
+
+## Saved-Prediction Calibration Audit
+
+Use this when the downstream neural models are already trained and you want to
+check whether validation-only score calibration helps without retraining or
+overwriting the main results.
+
+```bash
+python scripts/fm_baselines/downstream_search/calibrate_saved_predictions.py \
+  --input-root outputs_downstream_pub \
+  --output-root outputs_downstream_pub_calibrated \
+  --overwrite
+```
+
+The audit compares three per-fold strategies:
+
+- `current_saved_threshold`: original saved score, prediction, and validation-selected threshold.
+- `val_platt_lr_0p5`: logistic-regression/Platt calibrator fit only on that fold's validation split, then classified at calibrated score `0.5`.
+- `val_platt_lr_val_threshold`: same validation-only calibrator, then a balanced-accuracy threshold selected on calibrated validation scores and applied to test.
+
+Useful filtered smoke test:
+
+```bash
+python scripts/fm_baselines/downstream_search/calibrate_saved_predictions.py \
+  --input-root outputs_downstream_pub \
+  --output-root outputs_downstream_pub_calibrated_smoke \
+  --encoders dinov2 \
+  --features motion_prev_rgb \
+  --model-families tcn \
+  --max-combos 1 \
+  --overwrite
+```
+
+Calibration audit outputs:
+
+- `calibrated_fold_predictions.csv`
+- `calibration_per_fold_metrics.csv`
+- `calibrator_params.csv`
+- `calibration_test_metrics.csv`
+- `calibration_all_splits_metrics.csv`
+- `calibration_all_window_mode_results_concise.csv`
