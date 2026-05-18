@@ -37,7 +37,7 @@ from train_eval import (
 
 
 DEFAULT_ENCODERS = ["imagebind", "omnivore", "dinov2"]
-DEFAULT_FEATURES = ["masked_rgb", "masked_depth", "motion_prev_rgb", "motion_prev_depth", "flow_edge_rgb", "flow_edge_depth"]
+DEFAULT_FEATURES = ["motion_prev_rgb", "motion_prev_depth"]
 DEFAULT_MODEL_FAMILIES = ["attn_pool_mlp", "rnn_attn", "tcn", "transformer_encoder"]
 CONCISE_COLUMNS = [
     "model_name",

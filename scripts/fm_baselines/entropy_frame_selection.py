@@ -229,12 +229,8 @@ def main():
         "--features",
         nargs="*",
         default=[
-            "masked_rgb",
-            "masked_depth",
             "motion_prev_rgb",
             "motion_prev_depth",
-            "flow_edge_rgb",
-            "flow_edge_depth",
         ],
         help="Features to process",
     )

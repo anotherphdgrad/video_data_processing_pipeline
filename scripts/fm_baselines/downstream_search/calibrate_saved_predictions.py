@@ -86,7 +86,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--runs", nargs="*", default=None, help="Optional run_name filter, e.g. run_gpu_families.")
     parser.add_argument("--encoders", nargs="*", default=None, help="Optional encoder filter.")
-    parser.add_argument("--features", nargs="*", default=None, help="Optional feature filter.")
+    parser.add_argument("--features", nargs="*", default=["motion_prev_rgb", "motion_prev_depth"], help="Optional feature filter.")
     parser.add_argument("--model-families", nargs="*", default=None, help="Optional downstream model family filter.")
     parser.add_argument(
         "--max-combos",

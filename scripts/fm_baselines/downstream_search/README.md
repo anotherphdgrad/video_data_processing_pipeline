@@ -117,3 +117,91 @@ Calibration audit outputs:
 - `calibration_test_metrics.csv`
 - `calibration_all_splits_metrics.csv`
 - `calibration_all_window_mode_results_concise.csv`
+
+## Subject-Normalized Inference
+
+**Script:** `infer_subject_normalized.py`
+
+### Why
+
+During training, a single population mean/std is fit across all training
+participants and reused for val and test subjects.  Test subjects are
+held-out people whose embedding distributions may differ (body size, movement
+style, camera distance).  Per-subject normalization re-centres each test
+subject's embeddings into the space the model was trained in, reducing
+inter-subject distributional shift without retraining.
+
+### What it does
+
+For each saved fold checkpoint:
+
+1. Loads the raw zarr embeddings for test subjects (bypasses population normalization).
+2. Computes each test subject's own mean/std across their test windows.
+3. Normalizes their embeddings with those subject-specific statistics.
+4. Runs the saved model and collects scores.
+5. Applies the original validation-selected threshold.
+
+Subjects with fewer than `--min-windows-for-subject-norm` (default 3) windows
+fall back to population normalization — not enough data to estimate reliable
+per-subject statistics.
+
+Both strategies (`population_norm` and `subject_norm`) are written side by
+side so the comparison is direct.
+
+### Requirements
+
+Must be run on the server where **both** the entropy-selected zarr stores and
+the downstream checkpoints are present.  The script uses the same zarr + model
+infrastructure as the training pipeline — no extra dependencies.
+
+### Usage
+
+```bash
+# Full run — motion features, all encoders, all model families:
+python infer_subject_normalized.py \
+    --embedding-root /scratch/hsharm62/video_data_processing_pipeline/outputs_rgb_depth_fm/embeddings_zarr2_entropy_selected \
+    --input-root     /scratch/hsharm62/video_data_processing_pipeline/outputs_downstream_pub \
+    --output-root    /scratch/hsharm62/video_data_processing_pipeline/outputs_downstream_pub_subjectnorm \
+    --device cuda
+
+# Smoke test — one combo, two folds:
+python infer_subject_normalized.py \
+    --embedding-root /scratch/hsharm62/video_data_processing_pipeline/outputs_rgb_depth_fm/embeddings_zarr2_entropy_selected \
+    --input-root     /scratch/hsharm62/video_data_processing_pipeline/outputs_downstream_pub \
+    --output-root    /scratch/hsharm62/video_data_processing_pipeline/outputs_downstream_pub_subjectnorm_smoke \
+    --encoders dinov2 \
+    --features motion_prev_rgb \
+    --model-families transformer_encoder \
+    --max-folds 2 \
+    --device cuda
+```
+
+### Key arguments
+
+| Argument | Default | Description |
+|---|---|---|
+| `--embedding-root` | required | Entropy-selected zarr store root |
+| `--input-root` | required | Downstream run root (contains checkpoints + fold_predictions.csv) |
+| `--output-root` | required | New directory for outputs — source never overwritten |
+| `--features` | `motion_prev_rgb motion_prev_depth` | Feature filter |
+| `--min-windows-for-subject-norm` | `3` | Fallback threshold to population norm |
+| `--device` | `cuda` | `cuda` or `cpu` |
+| `--max-folds` | None | Limit folds per combo for smoke tests |
+
+### Outputs
+
+| File | Description |
+|---|---|
+| `subject_norm_per_fold_metrics.csv` | Metrics per fold × strategy (`population_norm` / `subject_norm`) |
+| `subject_norm_fold_predictions.csv` | Per-window scores for both strategies |
+| `subject_norm_test_metrics.csv` | Mean ± std across folds per combo × strategy |
+| `subject_norm_comparison.csv` | Side-by-side delta table: subject_norm − population_norm |
+| `config.json` | Run configuration |
+| `failures.csv` | Any combos that errored (if present) |
+
+### Interpreting the delta table
+
+A positive `delta_auc` means subject normalization improved AUC for that
+combo.  If most deltas are near zero, the main bottleneck is genuine
+inter-subject variability in stress responses rather than distributional shift
+in embedding statistics — in that case, AUC is already your honest ceiling.
