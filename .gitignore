@@ -222,3 +222,6 @@ __marimo__/
 # Local calibration audit outputs.
 outputs_downstream_pub_calibrated/
 outputs_downstream_pub_calibrated_smoke/
+
+# IMU source pipeline — tracked separately in its own repo.
+IMU-Stress-sensing/
