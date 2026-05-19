@@ -170,7 +170,15 @@ def load_depth_tcn_encoder(checkpoint_path: Path, device: str = "cpu") -> tuple[
         kernel_size=int(params["kernel_size"]),
         dropout=float(params["dropout"]),
     )
-    full_model.load_state_dict(ckpt["state_dict"])
+    # The original downstream checkpoint was saved from TemporalConvNet which has
+    # flat keys (net.*, pool.*, head.*).  DepthTCNWithHead wraps net+pool under
+    # an 'encoder' submodule, so remap keys before loading.
+    raw_sd = ckpt["state_dict"]
+    remapped = {
+        (f"encoder.{k}" if k.startswith("net.") or k.startswith("pool.") else k): v
+        for k, v in raw_sd.items()
+    }
+    full_model.load_state_dict(remapped)
 
     encoder = full_model.encoder.to(device)
     encoder.eval()

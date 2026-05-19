@@ -298,9 +298,9 @@ def main() -> None:
         output_path = Path(args.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         np.savez(str(output_path), pair_indices=pair_indices, embeddings=embeddings)
-    print(f"\nSaved {len(pair_indices)} embeddings (shape {embeddings.shape}) → {output_path}")
-    print(f"Embedding dim: {embeddings.shape[1]}")
-    print(f"Mean: {embeddings.mean():.4f}  Std: {embeddings.std():.4f}")
+        print(f"\nSaved {len(pair_indices)} embeddings (shape {embeddings.shape}) → {output_path}")
+        print(f"Embedding dim: {embeddings.shape[1]}")
+        print(f"Mean: {embeddings.mean():.4f}  Std: {embeddings.std():.4f}")
 
 
 if __name__ == "__main__":
