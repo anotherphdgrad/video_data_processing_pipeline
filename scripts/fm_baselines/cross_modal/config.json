@@ -13,7 +13,7 @@
   "output_root": "/home/harshit/2024/video_data_processing_pipeline/outputs_cross_modal",
 
   "teacher": {
-    "type": "limu_bert",
+    "type": "flirt_limu_bert",
     "imu_seq_len": 12,
     "imu_feature_dim": 6,
     "checkpoints": {

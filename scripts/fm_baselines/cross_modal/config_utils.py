@@ -45,7 +45,7 @@ def apply_config(args, cfg: dict) -> None:
     })
     teacher = cfg.get("teacher", {})
     flat.update({
-        "teacher_type":      teacher.get("type", "limu_bert"),
+        "teacher_type":      teacher.get("type", "flirt_limu_bert"),
         "imu_seq_len":       teacher.get("imu_seq_len", 12),
         "imu_feature_dim":   teacher.get("imu_feature_dim", 6),
     })

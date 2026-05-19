@@ -72,7 +72,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Pre-extract IMU teacher embeddings.")
     parser.add_argument("--config", default=None,
                         help="Path to config.json. When provided, extracts all folds automatically.")
-    parser.add_argument("--teacher-type", choices=["limu_bert", "flirt_lstm"], default=None)
+    parser.add_argument("--teacher-type", choices=["flirt_limu_bert", "flirt_lstm"], default=None)
     parser.add_argument("--teacher-ckpt", default=None,
                         help="Single fold checkpoint (ignored when --config is used).")
     parser.add_argument("--fm-store", default=None)
@@ -101,7 +101,7 @@ def parse_args() -> argparse.Namespace:
     if args.device is None:
         args.device = "cuda"
     if args.teacher_type is None:
-        args.teacher_type = "limu_bert"
+        args.teacher_type = "flirt_limu_bert"
     return args
 
 
@@ -243,17 +243,22 @@ def _extract_flirt_lstm(
 
 
 def _extract_one(teacher_type, ckpt_path, dataset, args, device):
-    if teacher_type == "limu_bert":
+    if teacher_type == "flirt_limu_bert":
+        # LIMU-BERT trained on FLIRT features — infer dims from checkpoint weights
         teacher = load_limu_bert_teacher(
             Path(ckpt_path),
-            feature_dim=args.imu_feature_dim,
-            seq_len=args.imu_seq_len,
+            feature_dim=None,   # inferred from transformer.embed.lin.weight
+            seq_len=None,       # inferred from checkpoint params
             device=device,
             limu_repo=getattr(args, "limu_bert_public_repo", None),
         )
-        return _extract_limu_bert(teacher, dataset, args.imu_seq_len, args.batch_size, device)
+        print(f"    Teacher feature_dim={teacher.transformer.embed.lin.weight.shape[1]}, "
+              f"repr_dim={teacher.repr_dim}")
+        # Uses the same FLIRT sequence building as flirt_lstm
+        return _extract_flirt_lstm(teacher, dataset, args.imu_seq_len, args.batch_size, device)
     else:
         teacher = load_flirt_lstm_teacher(Path(ckpt_path), device=device)
+        print(f"    Teacher repr_dim={teacher.repr_dim}")
         return _extract_flirt_lstm(teacher, dataset, args.imu_seq_len, args.batch_size, device)
 
 

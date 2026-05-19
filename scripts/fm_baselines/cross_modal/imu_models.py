@@ -255,23 +255,42 @@ def _load_limu_transformer(extra_repo: str | Path | None = None):
 
 def load_limu_bert_teacher(
     checkpoint_path: Path,
-    feature_dim: int = 6,
-    seq_len: int = 12,
+    feature_dim: int | None = None,
+    seq_len: int | None = None,
     device: str = "cpu",
     limu_repo: str | Path | None = None,
 ) -> LimuBertTeacher:
     """
     Load a LimuBertTeacher from a saved fold checkpoint.
 
+    feature_dim and seq_len are inferred from the checkpoint weights when not
+    provided.  For flirt_limu_bert_scratch checkpoints the embed layer has shape
+    (72, flirt_dim) so feature_dim is the FLIRT feature dimension, not 6.
+
     checkpoint_path : path to fold_N_model.pt saved by the IMU pipeline
-    feature_dim     : ACC feature channels (6 for raw_absdelta with 3-axis)
-    seq_len         : number of tokens (12 for the FLIRT-Torch baseline)
+    feature_dim     : input feature dim (inferred from checkpoint if None)
+    seq_len         : sequence length (inferred from checkpoint params if None)
     limu_repo       : explicit path to LIMU-BERT-Public repo (from config.json)
     """
     ckpt = torch.load(str(checkpoint_path), map_location="cpu", weights_only=False)
     params = ckpt["params"]
     pooling = str(params.get("sequence_pooling", "first"))
     dropout = float(params.get("dropout", 0.0))
+
+    # Infer feature_dim from transformer.embed.lin.weight shape: (hidden, feature_dim)
+    if feature_dim is None:
+        embed_w = ckpt["state_dict"].get("transformer.embed.lin.weight")
+        if embed_w is None:
+            raise ValueError(
+                "Cannot infer feature_dim: 'transformer.embed.lin.weight' not found in checkpoint. "
+                "Pass feature_dim explicitly."
+            )
+        feature_dim = int(embed_w.shape[1])
+
+    # Infer seq_len from checkpoint params
+    if seq_len is None:
+        seq_len = int(params.get("sequence_length", 12))
+
     cfg = make_limu_cfg(feature_dim, seq_len)
     model = LimuBertTeacher(cfg, pooling=pooling, dropout=dropout, limu_repo=limu_repo)
     model.load_state_dict(ckpt["state_dict"])
