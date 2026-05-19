@@ -352,11 +352,15 @@ def train_one_fold(
                 lambda_align=_lambda_align,
                 lambda_recon=_lambda_recon,
             )
-            # Recompute cls loss with true labels
+            # IMU classification loss: trains imu_in_proj so z_imu is
+            # stress-discriminative before it serves as alignment target.
+            logits_imu = model.classifier(model.encode_imu(imu_embed.detach()))
+            loss_cls_imu = F.cross_entropy(logits_imu, label)
             loss = (
                 F.cross_entropy(out["logits"], label)
                 + _lambda_align * out["loss_align"]
                 + _lambda_recon * out["loss_recon"]
+                + loss_cls_imu
             )
             loss.backward()
             if float(params["grad_clip_norm"]) > 0:

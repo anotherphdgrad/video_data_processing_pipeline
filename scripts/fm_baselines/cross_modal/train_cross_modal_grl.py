@@ -369,16 +369,22 @@ def train_one_fold(
             labels   = labels.to(device=device, dtype=torch.long)
 
             # Depth classification path
-            z_depth = model.encode_depth(depth_x)           # (B, shared_dim)
-            logits  = model.classifier(z_depth)
-            loss_cls = F.cross_entropy(logits, labels)
+            z_depth  = model.encode_depth(depth_x)
+            logits_d = model.classifier(z_depth)
+            loss_cls = F.cross_entropy(logits_d, labels)
 
-            # GRL domain alignment
-            z_imu = model.encode_imu(imu_embed.detach())    # (B, shared_dim), frozen teacher
+            # IMU path — imu_embed frozen (detached), but imu_in_proj trainable.
+            # loss_cls_imu trains imu_in_proj so z_imu is stress-discriminative
+            # before it serves as the stable reference distribution for the GRL.
+            z_imu        = model.encode_imu(imu_embed.detach())
+            logits_imu   = model.classifier(z_imu)
+            loss_cls_imu = F.cross_entropy(logits_imu, labels)
 
-            # Both modalities through GRL → discriminator.
+            # GRL domain alignment.
             # z_depth gets reversed gradients (confuses discriminator).
-            # z_imu is detached (frozen IMU path, no gradients needed).
+            # z_imu is detached here: the IMU side is a stable reference —
+            # the discriminator learns to recognise it, the depth encoder
+            # learns to match it via GRL, independently of loss_cls_imu.
             z_all = torch.cat([grl(z_depth), z_imu.detach()], dim=0)
             domain_labels = torch.cat([
                 torch.zeros(z_depth.size(0), dtype=torch.long, device=device),
@@ -386,9 +392,8 @@ def train_one_fold(
             ], dim=0)
             loss_domain = F.cross_entropy(discriminator(z_all), domain_labels)
 
-            # grl.alpha already scales the reversed gradient by current_lambda.
-            # Do NOT multiply loss_domain here — that would square the scaling.
-            loss = loss_cls + loss_domain
+            # grl.alpha scales the reversed gradient — no lambda multiplier here.
+            loss = loss_cls + loss_cls_imu + loss_domain
 
             optimizer.zero_grad()
             loss.backward()
