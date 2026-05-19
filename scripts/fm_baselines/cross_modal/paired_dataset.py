@@ -297,6 +297,9 @@ class PairedDepthIMUDataset(Dataset):
         self.fm_shape: tuple[int, int, int] = tuple(int(v) for v in fm_group["X"].shape)
         self.imu_feature_dim: int = self.imu_dataset.sequence_feature_dim
         self.imu_seq_len: int = self.imu_dataset.window_size
+        self.imu_shape: tuple[int, int, int] = (
+            len(self.imu_dataset), self.imu_seq_len, self.imu_feature_dim
+        )
 
     # ------------------------------------------------------------------
     # Properties
