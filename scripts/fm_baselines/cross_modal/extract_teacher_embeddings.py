@@ -70,22 +70,39 @@ from imu_models import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Pre-extract IMU teacher embeddings.")
-    parser.add_argument("--teacher-type", choices=["limu_bert", "flirt_lstm"], required=True)
-    parser.add_argument("--teacher-ckpt", required=True, help="Path to IMU fold checkpoint .pt")
-    parser.add_argument("--fm-store", required=True)
-    parser.add_argument("--fm-meta-csv", required=True)
-    parser.add_argument("--imu-data-root", required=True,
-                        help="Root directory of IMU CSV files (left_*_acc.csv)")
-    parser.add_argument("--imu-channel-mode", default="raw_absdelta",
-                        help="IMU sequence mode (default: raw_absdelta)")
-    parser.add_argument("--output", required=True, help="Output .npz file path")
-    parser.add_argument("--imu-seq-len", type=int, default=12,
-                        help="Sequence length for LIMU-BERT pooling (default: 12)")
-    parser.add_argument("--imu-feature-dim", type=int, default=6,
-                        help="[limu_bert] ACC feature channels (default: 6 for raw_absdelta)")
+    parser.add_argument("--config", default=None,
+                        help="Path to config.json. When provided, extracts all folds automatically.")
+    parser.add_argument("--teacher-type", choices=["limu_bert", "flirt_lstm"], default=None)
+    parser.add_argument("--teacher-ckpt", default=None,
+                        help="Single fold checkpoint (ignored when --config is used).")
+    parser.add_argument("--fm-store", default=None)
+    parser.add_argument("--fm-meta-csv", default=None)
+    parser.add_argument("--imu-data-root", default=None)
+    parser.add_argument("--imu-channel-mode", default=None)
+    parser.add_argument("--output", default=None,
+                        help="Output .npz path (single fold). Ignored when --config is used.")
+    parser.add_argument("--output-dir", default=None,
+                        help="Output directory for per-fold .npz files (overrides config output_root).")
+    parser.add_argument("--imu-seq-len", type=int, default=None)
+    parser.add_argument("--imu-feature-dim", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
-    return parser.parse_args()
+    parser.add_argument("--device", choices=["cuda", "cpu"], default=None)
+    args = parser.parse_args()
+    if args.config:
+        from config_utils import load_config, apply_config
+        apply_config(args, load_config(args.config))
+    # Fill remaining defaults
+    if args.imu_channel_mode is None:
+        args.imu_channel_mode = "raw_absdelta"
+    if args.imu_seq_len is None:
+        args.imu_seq_len = 12
+    if args.imu_feature_dim is None:
+        args.imu_feature_dim = 6
+    if args.device is None:
+        args.device = "cuda"
+    if args.teacher_type is None:
+        args.teacher_type = "limu_bert"
+    return args
 
 
 def _extract_limu_bert(
@@ -225,14 +242,18 @@ def _extract_flirt_lstm(
     return np.array(pair_indices_out, dtype=np.int64), embeddings
 
 
-def _load_imu_zarr_meta(imu_store_path: Path) -> dict:
-    import zarr
-    root = zarr.open_group(str(imu_store_path), mode="r")
-    return {
-        "base_subject_ids": np.asarray(root["samples"]["base_subject_ids"][:]).astype(str),
-        "task_ids": np.asarray(root["samples"]["task_ids"][:]).astype(str),
-        "window_start": np.asarray(root["samples"]["window_start"][:], dtype=np.float64),
-    }
+def _extract_one(teacher_type, ckpt_path, dataset, args, device):
+    if teacher_type == "limu_bert":
+        teacher = load_limu_bert_teacher(
+            Path(ckpt_path),
+            feature_dim=args.imu_feature_dim,
+            seq_len=args.imu_seq_len,
+            device=device,
+        )
+        return _extract_limu_bert(teacher, dataset, args.imu_seq_len, args.batch_size, device)
+    else:
+        teacher = load_flirt_lstm_teacher(Path(ckpt_path), device=device)
+        return _extract_flirt_lstm(teacher, dataset, args.imu_seq_len, args.batch_size, device)
 
 
 def main() -> None:
@@ -242,7 +263,7 @@ def main() -> None:
         print("CUDA not available, falling back to CPU.")
         device = "cpu"
 
-    print(f"Loading paired dataset...")
+    print("Loading paired dataset...")
     dataset = PairedDepthIMUDataset(
         fm_store_path=Path(args.fm_store),
         fm_metadata_csv_path=Path(args.fm_meta_csv),
@@ -252,34 +273,38 @@ def main() -> None:
     )
     print(f"Total paired windows: {dataset.n_pairs_total}")
 
-    print(f"\nLoading {args.teacher_type} teacher from {args.teacher_ckpt}")
-    if args.teacher_type == "limu_bert":
-        teacher = load_limu_bert_teacher(
-            Path(args.teacher_ckpt),
-            feature_dim=args.imu_feature_dim,
-            seq_len=args.imu_seq_len,
-            device=device,
-        )
-        print(f"Teacher repr_dim: {teacher.repr_dim}")
-        print("Extracting LIMU-BERT embeddings...")
-        pair_indices, embeddings = _extract_limu_bert(
-            teacher, dataset, args.imu_seq_len, args.batch_size, device
-        )
+    if args.config:
+        # Config mode: extract all folds automatically
+        from config_utils import load_config, teacher_checkpoints, teacher_embeddings_dir
+        cfg = load_config(args.config)
+        fold_ckpts = teacher_checkpoints(cfg)
+        out_dir = Path(args.output_dir) if args.output_dir else teacher_embeddings_dir(cfg)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        print(f"\nConfig mode: extracting {len(fold_ckpts)} fold(s) → {out_dir}")
+        for fold_id in sorted(fold_ckpts):
+            ckpt = fold_ckpts[fold_id]
+            out_path = out_dir / f"fold_{fold_id}.npz"
+            if out_path.exists():
+                print(f"  Fold {fold_id}: already exists, skipping ({out_path.name})")
+                continue
+            print(f"\n  Fold {fold_id}: {Path(ckpt).name}")
+            pair_indices, embeddings = _extract_one(args.teacher_type, ckpt, dataset, args, device)
+            np.savez(str(out_path), pair_indices=pair_indices, embeddings=embeddings)
+            print(f"  Saved {len(pair_indices)} embeddings (shape {embeddings.shape}) → {out_path}")
+        print(f"\nAll folds extracted to {out_dir}")
     else:
-        teacher = load_flirt_lstm_teacher(Path(args.teacher_ckpt), device=device)
-        print(f"Teacher repr_dim: {teacher.repr_dim}")
-        print("Extracting FLIRT-LSTM embeddings (slow — FLIRT runs per window)...")
-        pair_indices, embeddings = _extract_flirt_lstm(
-            teacher, dataset, args.imu_seq_len, args.batch_size, device
+        # Single-fold mode
+        if not args.teacher_ckpt:
+            raise SystemExit("--teacher-ckpt is required when not using --config")
+        if not args.output:
+            raise SystemExit("--output is required when not using --config")
+        print(f"\nExtracting with {args.teacher_type} from {args.teacher_ckpt}")
+        pair_indices, embeddings = _extract_one(
+            args.teacher_type, args.teacher_ckpt, dataset, args, device
         )
-
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(
-        str(output_path),
-        pair_indices=pair_indices,
-        embeddings=embeddings,
-    )
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(str(output_path), pair_indices=pair_indices, embeddings=embeddings)
     print(f"\nSaved {len(pair_indices)} embeddings (shape {embeddings.shape}) → {output_path}")
     print(f"Embedding dim: {embeddings.shape[1]}")
     print(f"Mean: {embeddings.mean():.4f}  Std: {embeddings.std():.4f}")

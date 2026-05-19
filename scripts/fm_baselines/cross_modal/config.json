@@ -1,0 +1,36 @@
+{
+  "_comment": "Cross-modal depth-IMU training config. All paths are absolute server paths.",
+
+  "fm_store": "/home/harshit/2024/video_data_processing_pipeline/outputs_rgb_depth_fm/embeddings_zarr2_entropy75/dinov2/motion_prev_depth.zarr",
+  "fm_meta_csv": "/home/harshit/2024/video_data_processing_pipeline/outputs_rgb_depth_fm/embeddings_zarr2_entropy75/dinov2/motion_prev_depth_metadata.csv",
+
+  "imu_data_root": "/home/harshit/2024/IMU_stress_sensing_src/IMU_data",
+  "imu_channel_mode": "raw_absdelta",
+
+  "depth_ckpt_dir": "/home/harshit/2024/video_data_processing_pipeline/outputs_downstream_pub/runs/run_gpu_families/dinov2/motion_prev_depth/tcn/checkpoints",
+
+  "output_root": "/home/harshit/2024/video_data_processing_pipeline/outputs_cross_modal",
+
+  "teacher": {
+    "type": "limu_bert",
+    "imu_seq_len": 12,
+    "imu_feature_dim": 6,
+    "checkpoints": {
+      "1": "/home/harshit/2024/IMU_stress_sensing_src/outputs_flirt_torch_sweep/window_30s_overlap_15s/raw_absdelta/flirt_limu_bert_scratch/fold_1_model.pt",
+      "2": "/home/harshit/2024/IMU_stress_sensing_src/outputs_flirt_torch_sweep/window_30s_overlap_15s/raw_absdelta/flirt_limu_bert_scratch/fold_2_model.pt",
+      "3": "/home/harshit/2024/IMU_stress_sensing_src/outputs_flirt_torch_sweep/window_30s_overlap_15s/raw_absdelta/flirt_limu_bert_scratch/fold_3_model.pt",
+      "4": "/home/harshit/2024/IMU_stress_sensing_src/outputs_flirt_torch_sweep/window_30s_overlap_15s/raw_absdelta/flirt_limu_bert_scratch/fold_4_model.pt",
+      "5": "/home/harshit/2024/IMU_stress_sensing_src/outputs_flirt_torch_sweep/window_30s_overlap_15s/raw_absdelta/flirt_limu_bert_scratch/fold_5_model.pt"
+    }
+  },
+
+  "training": {
+    "n_splits": 5,
+    "val_ratio": 0.2,
+    "random_seed": 42,
+    "optuna_trials": 30,
+    "tune_fold_id": 1,
+    "device": "cuda",
+    "batch_size": 64
+  }
+}

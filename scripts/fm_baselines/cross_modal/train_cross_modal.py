@@ -350,28 +350,44 @@ def sample_params(trial: optuna.Trial) -> dict:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Cross-modal depth TCN training with IMU teacher.")
-    p.add_argument("--fm-store", required=True)
-    p.add_argument("--fm-meta-csv", required=True)
-    p.add_argument("--imu-data-root", required=True,
-                   help="Root directory of IMU CSV files (same path as FLIRT-Torch --data-root)")
-    p.add_argument("--imu-channel-mode", default="raw_absdelta")
-    p.add_argument("--teacher-embeddings", required=True,
-                   help=".npz from extract_teacher_embeddings.py. "
-                        "Can also be a directory containing fold_1.npz ... fold_5.npz "
-                        "for per-fold teacher embeddings (recommended for publication).")
-    p.add_argument("--depth-ckpt-dir", required=True,
-                   help="Directory containing fold_1.pt ... fold_5.pt from downstream TCN run")
-    p.add_argument("--output-root", default="outputs_cross_modal")
+    p.add_argument("--config", default=None,
+                   help="Path to config.json. Provides defaults for all path arguments.")
+    p.add_argument("--fm-store", default=None)
+    p.add_argument("--fm-meta-csv", default=None)
+    p.add_argument("--imu-data-root", default=None)
+    p.add_argument("--imu-channel-mode", default=None)
+    p.add_argument("--teacher-embeddings", default=None,
+                   help=".npz file or directory of fold_N.npz files. "
+                        "Defaults to <output_root>/teacher_embeddings/ when --config is used.")
+    p.add_argument("--depth-ckpt-dir", default=None)
+    p.add_argument("--output-root", default=None)
     p.add_argument("--run-name", default=None)
-    p.add_argument("--n-splits", type=int, default=5)
-    p.add_argument("--val-ratio", type=float, default=0.2)
-    p.add_argument("--random-seed", type=int, default=42)
-    p.add_argument("--optuna-trials", type=int, default=30)
-    p.add_argument("--tune-fold-id", type=int, default=1)
+    p.add_argument("--n-splits", type=int, default=None)
+    p.add_argument("--val-ratio", type=float, default=None)
+    p.add_argument("--random-seed", type=int, default=None)
+    p.add_argument("--optuna-trials", type=int, default=None)
+    p.add_argument("--tune-fold-id", type=int, default=None)
     p.add_argument("--max-folds", type=int, default=None)
-    p.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
+    p.add_argument("--device", choices=["cuda", "cpu"], default=None)
     p.add_argument("--no-progress", action="store_true")
-    return p.parse_args()
+    args = p.parse_args()
+    if args.config:
+        from config_utils import load_config, apply_config, teacher_embeddings_dir
+        cfg = load_config(args.config)
+        apply_config(args, cfg)
+        if args.teacher_embeddings is None:
+            args.teacher_embeddings = str(teacher_embeddings_dir(cfg))
+    # Hardcoded defaults if still None
+    for attr, default in [("n_splits", 5), ("val_ratio", 0.2), ("random_seed", 42),
+                           ("optuna_trials", 30), ("tune_fold_id", 1),
+                           ("device", "cuda"), ("imu_channel_mode", "raw_absdelta"),
+                           ("output_root", "outputs_cross_modal")]:
+        if getattr(args, attr) is None:
+            setattr(args, attr, default)
+    for required in ["fm_store", "fm_meta_csv", "imu_data_root", "depth_ckpt_dir", "teacher_embeddings"]:
+        if getattr(args, required) is None:
+            p.error(f"--{required.replace('_','-')} is required (or set in --config)")
+    return args
 
 
 def main() -> None:

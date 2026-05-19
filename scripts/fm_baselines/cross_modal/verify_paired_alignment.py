@@ -31,28 +31,23 @@ import numpy as np
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Verify FM-IMU paired alignment.")
-    parser.add_argument("--fm-store", required=True, help="FM depth zarr store path.")
-    parser.add_argument(
-        "--fm-meta-csv", required=True,
-        help="FM metadata CSV (sibling of zarr store, contains task_id)."
-    )
-    parser.add_argument(
-        "--imu-data-root", required=True,
-        help="Root directory of IMU CSV files (same path used by FLIRT-Torch baseline)."
-    )
-    parser.add_argument(
-        "--imu-channel-mode", default="raw_absdelta",
-        help="IMU sequence mode (default: raw_absdelta, matches FLIRT-Torch best model)."
-    )
-    parser.add_argument(
-        "--n-samples", type=int, default=5,
-        help="Number of sample pairs to print for visual inspection."
-    )
-    parser.add_argument(
-        "--no-normalizer", action="store_true",
-        help="Skip normalizer computation (faster smoke test)."
-    )
-    return parser.parse_args()
+    parser.add_argument("--config", default=None, help="Path to config.json (provides path defaults).")
+    parser.add_argument("--fm-store", default=None)
+    parser.add_argument("--fm-meta-csv", default=None)
+    parser.add_argument("--imu-data-root", default=None)
+    parser.add_argument("--imu-channel-mode", default=None)
+    parser.add_argument("--n-samples", type=int, default=5)
+    parser.add_argument("--no-normalizer", action="store_true")
+    args = parser.parse_args()
+    if args.config:
+        from config_utils import load_config, apply_config
+        apply_config(args, load_config(args.config))
+    if args.imu_channel_mode is None:
+        args.imu_channel_mode = "raw_absdelta"
+    for required in ["fm_store", "fm_meta_csv", "imu_data_root"]:
+        if getattr(args, required) is None:
+            parser.error(f"--{required.replace('_','-')} is required (or set in --config)")
+    return args
 
 
 def _sep(title: str = "") -> None:
