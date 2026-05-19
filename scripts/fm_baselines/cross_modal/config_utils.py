@@ -50,7 +50,7 @@ def apply_config(args, cfg: dict) -> None:
         "imu_feature_dim":   teacher.get("imu_feature_dim", 6),
     })
     for key, value in flat.items():
-        if hasattr(args, key) and getattr(args, key) is None:
+        if getattr(args, key, None) is None:
             setattr(args, key, value)
 
 
