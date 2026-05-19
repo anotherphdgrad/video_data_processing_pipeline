@@ -164,19 +164,7 @@ def _extract_flirt_lstm(
             "See README for details."
         ) from exc
 
-    # FlirtACCFeatureExtractor is in the IMU pipeline — only required for this path.
-    # It wraps the flirt package and the already-loaded IMUStressWindowDataset.
-    imu_pipeline_root = Path(__file__).resolve().parents[3] / "IMU-Stress-sensing"
-    if str(imu_pipeline_root) not in sys.path:
-        sys.path.insert(0, str(imu_pipeline_root))
-    try:
-        from imu_stress.features import FlirtACCFeatureExtractor
-    except ImportError as exc:
-        raise SystemExit(
-            "Cannot import FlirtACCFeatureExtractor.\n"
-            "Ensure IMU-Stress-sensing is present and flirt is installed.\n"
-            f"Looked in: {imu_pipeline_root}"
-        ) from exc
+    from flirt_features import FlirtACCFeatureExtractor
 
     # Reuse the already-loaded IMUStressWindowDataset from paired_dataset
     # (it was built with raw_absdelta which includes reserved jelly baselines)
