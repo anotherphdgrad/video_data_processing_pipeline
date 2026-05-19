@@ -29,7 +29,7 @@
     "n_splits": 5,
     "val_ratio": 0.2,
     "random_seed": 42,
-    "optuna_trials": 30,
+    "optuna_trials": 50,
     "tune_fold_id": 1,
     "device": "cuda",
     "batch_size": 64

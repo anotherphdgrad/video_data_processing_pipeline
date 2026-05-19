@@ -427,18 +427,22 @@ def train_one_fold(
 # ---------------------------------------------------------------------------
 
 def sample_params(trial: optuna.Trial) -> dict:
+    use_decoder = trial.suggest_categorical("use_decoder", [True, False])
+    # lambda_recon only affects the loss when use_decoder=True; fix it to 0 otherwise
+    # so Optuna doesn't waste budget on a dead parameter.
+    lambda_recon = trial.suggest_float("lambda_recon", 0.0, 0.5) if use_decoder else 0.0
     return {
         "learning_rate": trial.suggest_float("learning_rate", 1e-5, 3e-3, log=True),
         "weight_decay": trial.suggest_float("weight_decay", 1e-7, 1e-2, log=True),
         "lambda_align": trial.suggest_float("lambda_align", 0.1, 1.0),
-        "lambda_recon": trial.suggest_float("lambda_recon", 0.0, 0.5),
+        "lambda_recon": lambda_recon,
         "shared_dim": trial.suggest_categorical("shared_dim", [64, 128, 256]),
         "proj_dropout": trial.suggest_float("proj_dropout", 0.0, 0.3),
         "batch_size": trial.suggest_categorical("batch_size", [32, 64, 128]),
         "max_epochs": trial.suggest_categorical("max_epochs", [30, 50, 75]),
         "patience": trial.suggest_categorical("patience", [8, 12, 16]),
         "grad_clip_norm": trial.suggest_categorical("grad_clip_norm", [0.0, 1.0, 5.0]),
-        "use_decoder": trial.suggest_categorical("use_decoder", [True, False]),
+        "use_decoder": use_decoder,
     }
 
 
