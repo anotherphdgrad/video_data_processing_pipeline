@@ -356,7 +356,9 @@ def parse_args() -> argparse.Namespace:
                    help="Root directory of IMU CSV files (same path as FLIRT-Torch --data-root)")
     p.add_argument("--imu-channel-mode", default="raw_absdelta")
     p.add_argument("--teacher-embeddings", required=True,
-                   help=".npz from extract_teacher_embeddings.py")
+                   help=".npz from extract_teacher_embeddings.py. "
+                        "Can also be a directory containing fold_1.npz ... fold_5.npz "
+                        "for per-fold teacher embeddings (recommended for publication).")
     p.add_argument("--depth-ckpt-dir", required=True,
                    help="Directory containing fold_1.pt ... fold_5.pt from downstream TCN run")
     p.add_argument("--output-root", default="outputs_cross_modal")
@@ -393,14 +395,30 @@ def main() -> None:
         verbose=True,
     )
 
-    # Load teacher embeddings
-    print(f"Loading teacher embeddings from {args.teacher_embeddings}...")
-    npz = np.load(args.teacher_embeddings)
-    teacher_pair_indices = npz["pair_indices"]
-    teacher_embeddings = npz["embeddings"]
-    pair_index_to_pos = {int(pi): pos for pos, pi in enumerate(teacher_pair_indices)}
-    imu_dim = teacher_embeddings.shape[1]
-    print(f"Teacher embeddings: {teacher_embeddings.shape}, dim={imu_dim}")
+    # Load teacher embeddings — single file or per-fold directory
+    teacher_path = Path(args.teacher_embeddings)
+    if teacher_path.is_dir():
+        # Per-fold mode: load fold_N.npz lazily per fold
+        per_fold_teacher = {}
+        for fold_file in sorted(teacher_path.glob("fold_*.npz")):
+            fold_num = int(fold_file.stem.split("_")[1])
+            per_fold_teacher[fold_num] = fold_file
+        if not per_fold_teacher:
+            raise SystemExit(f"No fold_N.npz files found in {teacher_path}")
+        print(f"Per-fold teacher embeddings found: folds {sorted(per_fold_teacher)}")
+        # Load fold 1 to get imu_dim
+        _sample = np.load(str(list(per_fold_teacher.values())[0]))
+        imu_dim = _sample["embeddings"].shape[1]
+        teacher_embeddings = None  # loaded per fold below
+        pair_index_to_pos = None
+    else:
+        print(f"Loading teacher embeddings from {args.teacher_embeddings}...")
+        npz = np.load(args.teacher_embeddings)
+        teacher_embeddings = npz["embeddings"]
+        pair_index_to_pos = {int(pi): pos for pos, pi in enumerate(npz["pair_indices"])}
+        imu_dim = teacher_embeddings.shape[1]
+        per_fold_teacher = {}
+        print(f"Teacher embeddings: {teacher_embeddings.shape}, dim={imu_dim}")
 
     # Build folds
     meta_df = dataset.pairs_metadata_frame().reset_index(drop=True)
@@ -495,13 +513,22 @@ def main() -> None:
             print(f"  WARNING: checkpoint not found for fold {fold_id}, skipping.")
             continue
 
+        # Load per-fold teacher embeddings if available
+        fold_teacher_embeddings = teacher_embeddings
+        fold_pair_index_to_pos = pair_index_to_pos
+        if per_fold_teacher:
+            npz_path = per_fold_teacher.get(fold_id, list(per_fold_teacher.values())[0])
+            npz = np.load(str(npz_path))
+            fold_teacher_embeddings = npz["embeddings"]
+            fold_pair_index_to_pos = {int(pi): pos for pos, pi in enumerate(npz["pair_indices"])}
+
         print(f"  Fold {fold_id}...")
         # Recompute FM stats from this fold's train split
         fm_mean_f, fm_std_f = dataset.compute_fm_normalizer(fold["train"].tolist())
 
         def make_ds_fold(indices):
             return PairedWithTeacher(
-                dataset, teacher_embeddings, pair_index_to_pos,
+                dataset, fold_teacher_embeddings, fold_pair_index_to_pos,
                 indices, fm_mean_f, fm_std_f
             )
 
