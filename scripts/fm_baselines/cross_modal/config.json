@@ -6,6 +6,7 @@
 
   "imu_data_root": "/home/harshit/2024/IMU_stress_sensing_src/IMU_data",
   "imu_channel_mode": "raw_absdelta",
+  "limu_bert_public_repo": "/home/harshit/2024/IMU_stress_sensing_src/modules/LIMU-BERT-Public",
 
   "depth_ckpt_dir": "/home/harshit/2024/video_data_processing_pipeline/outputs_downstream_pub/runs/run_gpu_families/dinov2/motion_prev_depth/tcn/checkpoints",
 

@@ -249,6 +249,7 @@ def _extract_one(teacher_type, ckpt_path, dataset, args, device):
             feature_dim=args.imu_feature_dim,
             seq_len=args.imu_seq_len,
             device=device,
+            limu_repo=getattr(args, "limu_bert_public_repo", None),
         )
         return _extract_limu_bert(teacher, dataset, args.imu_seq_len, args.batch_size, device)
     else:

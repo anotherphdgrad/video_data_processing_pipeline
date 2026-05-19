@@ -26,12 +26,13 @@ def apply_config(args, cfg: dict) -> None:
     Only fills fields that exist in args and are currently None.
     """
     flat = {
-        "fm_store":        cfg.get("fm_store"),
-        "fm_meta_csv":     cfg.get("fm_meta_csv"),
-        "imu_data_root":   cfg.get("imu_data_root"),
-        "imu_channel_mode": cfg.get("imu_channel_mode", "raw_absdelta"),
-        "depth_ckpt_dir":  cfg.get("depth_ckpt_dir"),
-        "output_root":     cfg.get("output_root"),
+        "fm_store":             cfg.get("fm_store"),
+        "fm_meta_csv":          cfg.get("fm_meta_csv"),
+        "imu_data_root":        cfg.get("imu_data_root"),
+        "imu_channel_mode":     cfg.get("imu_channel_mode", "raw_absdelta"),
+        "limu_bert_public_repo": cfg.get("limu_bert_public_repo"),
+        "depth_ckpt_dir":       cfg.get("depth_ckpt_dir"),
+        "output_root":          cfg.get("output_root"),
     }
     training = cfg.get("training", {})
     flat.update({

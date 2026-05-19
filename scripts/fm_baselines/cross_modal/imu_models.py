@@ -179,9 +179,10 @@ class LimuBertTeacher(nn.Module):
     dropout : dropout probability
     """
 
-    def __init__(self, cfg: SimpleNamespace, pooling: str = "first", dropout: float = 0.0) -> None:
+    def __init__(self, cfg: SimpleNamespace, pooling: str = "first", dropout: float = 0.0,
+                 limu_repo: str | Path | None = None) -> None:
         super().__init__()
-        Transformer = _load_limu_transformer()
+        Transformer = _load_limu_transformer(extra_repo=limu_repo)
         self.transformer = Transformer(cfg)
         self.pooling = pooling
         self.dropout_layer = nn.Dropout(dropout)
@@ -214,15 +215,20 @@ class LimuBertTeacher(nn.Module):
         return self.classifier(self.get_representation(x, mask))
 
 
-def _load_limu_transformer():
+def _load_limu_transformer(extra_repo: str | Path | None = None):
     """Load the Transformer class from LIMU-BERT-Public. Raises if not found."""
     import importlib
     import sys
 
-    repo_candidates = [
+    repo_candidates = []
+    if extra_repo is not None:
+        repo_candidates.append(Path(extra_repo))
+    repo_candidates += [
         Path("modules/LIMU-BERT-Public"),
         Path(__file__).resolve().parents[3] / "IMU-Stress-sensing" / "modules" / "LIMU-BERT-Public",
+        Path(__file__).resolve().parents[5] / "IMU_stress_sensing_src" / "modules" / "LIMU-BERT-Public",
     ]
+
     for repo_dir in repo_candidates:
         models_path = repo_dir / "models.py"
         if models_path.exists():
@@ -241,25 +247,33 @@ def _load_limu_transformer():
                     sys.path.pop(0)
 
     raise ImportError(
-        "LIMU-BERT-Public not found. Expected at modules/LIMU-BERT-Public/models.py.\n"
-        "See cross_modal/README.md for setup instructions."
+        "LIMU-BERT-Public not found. Searched:\n"
+        + "\n".join(f"  {p}" for p in repo_candidates)
+        + "\nSet 'limu_bert_public_repo' in config.json or see cross_modal/README.md."
     )
 
 
-def load_limu_bert_teacher(checkpoint_path: Path, feature_dim: int = 6, seq_len: int = 12, device: str = "cpu") -> LimuBertTeacher:
+def load_limu_bert_teacher(
+    checkpoint_path: Path,
+    feature_dim: int = 6,
+    seq_len: int = 12,
+    device: str = "cpu",
+    limu_repo: str | Path | None = None,
+) -> LimuBertTeacher:
     """
     Load a LimuBertTeacher from a saved fold checkpoint.
 
     checkpoint_path : path to fold_N_model.pt saved by the IMU pipeline
     feature_dim     : ACC feature channels (6 for raw_absdelta with 3-axis)
     seq_len         : number of tokens (12 for the FLIRT-Torch baseline)
+    limu_repo       : explicit path to LIMU-BERT-Public repo (from config.json)
     """
     ckpt = torch.load(str(checkpoint_path), map_location="cpu", weights_only=False)
     params = ckpt["params"]
     pooling = str(params.get("sequence_pooling", "first"))
     dropout = float(params.get("dropout", 0.0))
     cfg = make_limu_cfg(feature_dim, seq_len)
-    model = LimuBertTeacher(cfg, pooling=pooling, dropout=dropout)
+    model = LimuBertTeacher(cfg, pooling=pooling, dropout=dropout, limu_repo=limu_repo)
     model.load_state_dict(ckpt["state_dict"])
     model = model.to(device)
     model.eval()
