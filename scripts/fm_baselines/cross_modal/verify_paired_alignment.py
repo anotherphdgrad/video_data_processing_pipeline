@@ -36,7 +36,14 @@ def parse_args() -> argparse.Namespace:
         "--fm-meta-csv", required=True,
         help="FM metadata CSV (sibling of zarr store, contains task_id)."
     )
-    parser.add_argument("--imu-store", required=True, help="IMU shared zarr store path.")
+    parser.add_argument(
+        "--imu-data-root", required=True,
+        help="Root directory of IMU CSV files (same path used by FLIRT-Torch baseline)."
+    )
+    parser.add_argument(
+        "--imu-channel-mode", default="raw_absdelta",
+        help="IMU sequence mode (default: raw_absdelta, matches FLIRT-Torch best model)."
+    )
     parser.add_argument(
         "--n-samples", type=int, default=5,
         help="Number of sample pairs to print for visual inspection."
@@ -69,14 +76,15 @@ def main() -> None:
 
     fm_store = Path(args.fm_store).resolve()
     fm_meta = Path(args.fm_meta_csv).resolve()
-    imu_store = Path(args.imu_store).resolve()
+    imu_data_root = Path(args.imu_data_root).resolve()
 
     _sep("PATHS")
     print(f"FM zarr store   : {fm_store}")
     print(f"FM metadata CSV : {fm_meta}")
-    print(f"IMU zarr store  : {imu_store}")
+    print(f"IMU data root   : {imu_data_root}")
+    print(f"IMU channel mode: {args.imu_channel_mode}")
 
-    for p in [fm_store, fm_meta, imu_store]:
+    for p in [fm_store, fm_meta, imu_data_root]:
         if not p.exists():
             print(f"\nERROR: not found: {p}")
             sys.exit(1)
@@ -89,7 +97,8 @@ def main() -> None:
         dataset = PairedDepthIMUDataset(
             fm_store_path=fm_store,
             fm_metadata_csv_path=fm_meta,
-            imu_store_path=imu_store,
+            imu_data_root=imu_data_root,
+            imu_channel_mode=args.imu_channel_mode,
             verbose=True,
         )
     except Exception as exc:
@@ -189,10 +198,11 @@ def main() -> None:
     if all_ok:
         print("All checks passed. Dataset is ready for cross-modal training.")
         print()
-        print("Next step: run your training script pointing to these stores.")
-        print(f"  --fm-store    {fm_store}")
-        print(f"  --fm-meta-csv {fm_meta}")
-        print(f"  --imu-store   {imu_store}")
+        print("Next step: run your training script pointing to these paths.")
+        print(f"  --fm-store        {fm_store}")
+        print(f"  --fm-meta-csv     {fm_meta}")
+        print(f"  --imu-data-root   {imu_data_root}")
+        print(f"  --imu-channel-mode {args.imu_channel_mode}")
     else:
         print("Some checks FAILED. Review warnings above before training.")
         sys.exit(1)

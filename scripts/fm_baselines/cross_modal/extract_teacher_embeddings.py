@@ -74,10 +74,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--teacher-ckpt", required=True, help="Path to IMU fold checkpoint .pt")
     parser.add_argument("--fm-store", required=True)
     parser.add_argument("--fm-meta-csv", required=True)
-    parser.add_argument("--imu-store", required=True)
+    parser.add_argument("--imu-data-root", required=True,
+                        help="Root directory of IMU CSV files (left_*_acc.csv)")
+    parser.add_argument("--imu-channel-mode", default="raw_absdelta",
+                        help="IMU sequence mode (default: raw_absdelta)")
     parser.add_argument("--output", required=True, help="Output .npz file path")
-    parser.add_argument("--imu-data-root", default=None,
-                        help="[flirt_lstm only] Path to IMU CSV data root")
     parser.add_argument("--imu-seq-len", type=int, default=12,
                         help="Sequence length for LIMU-BERT pooling (default: 12)")
     parser.add_argument("--imu-feature-dim", type=int, default=6,
@@ -94,26 +95,25 @@ def _extract_limu_bert(
     batch_size: int,
     device: str,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Extract LIMU-BERT embeddings from raw ACC sequences via segment mean pooling."""
-    import zarr
-
-    root = zarr.open_group(str(dataset.imu_store_path), mode="r")
-    seq_array = root["samples"]["sequences"]
-
+    """
+    Extract LIMU-BERT embeddings from raw ACC sequences via segment mean pooling.
+    Reads directly from IMUStressWindowDataset — no zarr cache needed.
+    """
     all_pairs = dataset._all_pairs
     N = len(all_pairs)
     pair_indices = np.array([p.pair_index for p in all_pairs], dtype=np.int64)
-    imu_zarr_indices = np.array([p.imu_zarr_index for p in all_pairs], dtype=np.int64)
-
     embeddings_list = []
 
     teacher.eval()
     with torch.no_grad():
         for start in range(0, N, batch_size):
             end = min(start + batch_size, N)
-            batch_zarr_idx = imu_zarr_indices[start:end]
-            # Load raw ACC sequences
-            raw_seqs = np.asarray(seq_array.oindex[batch_zarr_idx], dtype=np.float32)
+            batch_pairs = all_pairs[start:end]
+            # Load raw (non-transformed) ACC sequences from IMUStressWindowDataset
+            raw_seqs = np.stack([
+                dataset.imu_dataset.get_raw_sequence_array(p.imu_dataset_index)
+                for p in batch_pairs
+            ], axis=0).astype(np.float32)
             # Segment mean pool to seq_len tokens
             pooled = segment_mean_pool(raw_seqs, target_len=seq_len)
             x = torch.from_numpy(pooled).to(device=device, dtype=torch.float32)
@@ -148,31 +148,23 @@ def _extract_flirt_lstm(
             "See README for details."
         ) from exc
 
-    # Import IMU dataset from sister repo (optional dep — noted in README)
+    # FlirtACCFeatureExtractor is in the IMU pipeline — only required for this path.
+    # It wraps the flirt package and the already-loaded IMUStressWindowDataset.
     imu_pipeline_root = Path(__file__).resolve().parents[3] / "IMU-Stress-sensing"
     if str(imu_pipeline_root) not in sys.path:
         sys.path.insert(0, str(imu_pipeline_root))
-
     try:
-        from imu_stress.dataset import IMUStressWindowDataset
         from imu_stress.features import FlirtACCFeatureExtractor
     except ImportError as exc:
         raise SystemExit(
-            "Cannot import IMU pipeline modules. Ensure IMU-Stress-sensing is in the repo.\n"
+            "Cannot import FlirtACCFeatureExtractor.\n"
+            "Ensure IMU-Stress-sensing is present and flirt is installed.\n"
             f"Looked in: {imu_pipeline_root}"
         ) from exc
 
-    print("Building IMU dataset for FLIRT feature extraction (this may take a while)...")
-    imu_dataset = IMUStressWindowDataset(
-        data_root=imu_data_root,
-        window_seconds=30.0,
-        overlap_seconds=15.0,
-        sample_rate_hz=64.0,
-        raw_sample_rate_hz=32.0,
-        reserve_jelly_baseline_windows=True,
-        use_jelly_baseline_delta=False,
-        jelly_sequence_mode="raw_absdelta",
-    )
+    # Reuse the already-loaded IMUStressWindowDataset from paired_dataset
+    # (it was built with raw_absdelta which includes reserved jelly baselines)
+    imu_dataset = dataset.imu_dataset
     extractor = FlirtACCFeatureExtractor(
         imu_dataset,
         num_cores=1,
@@ -181,24 +173,20 @@ def _extract_flirt_lstm(
         use_abs_delta=True,
     )
 
-    meta_df = dataset.pairs_metadata_frame()
     all_pairs = dataset._all_pairs
     pair_indices = np.array([p.pair_index for p in all_pairs], dtype=np.int64)
 
     # Build FLIRT sequences in task/subject order (same logic as build_sequence_split)
-    imu_meta = _load_imu_zarr_meta(dataset.imu_store_path)
-    sorted_pairs = sorted(all_pairs, key=lambda p: (p.base_subject_id, p.task_id, p.imu_zarr_index))
+    sorted_pairs = sorted(all_pairs, key=lambda p: (p.base_subject_id, p.task_id, p.imu_dataset_index))
 
     feature_sequences = {}  # pair_index → (seq_len, flirt_dim) array
     from itertools import groupby
     for (subj, task), group_iter in groupby(sorted_pairs, key=lambda p: (p.base_subject_id, p.task_id)):
         group = list(group_iter)
         # Match to imu_dataset windows by (subject, task)
-        imu_window_indices = [
-            i for i, w in enumerate(imu_dataset.windows)
-            if w.base_subject_id == subj and w.task_id == task
-        ]
-        n_windows = min(len(group), len(imu_window_indices))
+        # Use imu_dataset_index from the pairs directly — already aligned
+        imu_window_indices = [p.imu_dataset_index for p in group]
+        n_windows = len(imu_window_indices)
         if n_windows == 0:
             continue
         group_features = extractor.feature_matrix(imu_window_indices[:n_windows])
@@ -258,7 +246,8 @@ def main() -> None:
     dataset = PairedDepthIMUDataset(
         fm_store_path=Path(args.fm_store),
         fm_metadata_csv_path=Path(args.fm_meta_csv),
-        imu_store_path=Path(args.imu_store),
+        imu_data_root=Path(args.imu_data_root),
+        imu_channel_mode=args.imu_channel_mode,
         verbose=True,
     )
     print(f"Total paired windows: {dataset.n_pairs_total}")
@@ -279,11 +268,9 @@ def main() -> None:
     else:
         teacher = load_flirt_lstm_teacher(Path(args.teacher_ckpt), device=device)
         print(f"Teacher repr_dim: {teacher.repr_dim}")
-        if not args.imu_data_root:
-            raise SystemExit("--imu-data-root is required for flirt_lstm teacher.")
         print("Extracting FLIRT-LSTM embeddings (slow — FLIRT runs per window)...")
         pair_indices, embeddings = _extract_flirt_lstm(
-            teacher, dataset, args.imu_data_root, args.imu_seq_len, args.batch_size, device
+            teacher, dataset, args.imu_seq_len, args.batch_size, device
         )
 
     output_path = Path(args.output)

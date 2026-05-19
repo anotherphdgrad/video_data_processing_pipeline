@@ -352,7 +352,9 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Cross-modal depth TCN training with IMU teacher.")
     p.add_argument("--fm-store", required=True)
     p.add_argument("--fm-meta-csv", required=True)
-    p.add_argument("--imu-store", required=True)
+    p.add_argument("--imu-data-root", required=True,
+                   help="Root directory of IMU CSV files (same path as FLIRT-Torch --data-root)")
+    p.add_argument("--imu-channel-mode", default="raw_absdelta")
     p.add_argument("--teacher-embeddings", required=True,
                    help=".npz from extract_teacher_embeddings.py")
     p.add_argument("--depth-ckpt-dir", required=True,
@@ -386,7 +388,8 @@ def main() -> None:
     dataset = PairedDepthIMUDataset(
         fm_store_path=Path(args.fm_store),
         fm_metadata_csv_path=Path(args.fm_meta_csv),
-        imu_store_path=Path(args.imu_store),
+        imu_data_root=Path(args.imu_data_root),
+        imu_channel_mode=args.imu_channel_mode,
         verbose=True,
     )
 
