@@ -214,15 +214,90 @@ def collect_scores(
     loader: DataLoader,
     device: str,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Population-normalized eval — used for train split only."""
     model.eval()
     ys, scores = [], []
     with torch.no_grad():
         for depth_x, _imu_embed, label in loader:
             depth_x = depth_x.to(device=device, dtype=torch.float32)
-            probs = model.predict_scores(depth_x)
+            probs = model.predict_scores(depth_x)   # depth-only, no IMU
             ys.append(label.numpy())
             scores.append(probs.cpu().numpy())
     return np.concatenate(ys), np.concatenate(scores)
+
+
+def collect_scores_subject_normalized(
+    model: CrossModalDepthModel,
+    dataset: "PairedDepthIMUDataset",
+    pair_indices: np.ndarray,
+    pop_mean: np.ndarray,
+    pop_std: np.ndarray,
+    device: str,
+    batch_size: int = 64,
+    min_windows: int = 3,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Per-subject normalized eval for val and test splits (depth-only, no IMU).
+
+    For each subject in pair_indices, computes their own mean/std from their
+    windows and normalizes before running the model.  Falls back to population
+    stats for subjects with fewer than min_windows windows.
+    """
+    from collections import defaultdict
+
+    zarr = _require_zarr()
+    group = zarr.open_group(str(dataset.fm_store_path), mode="r")
+    x_array = group["X"]
+
+    pair_map = {p.pair_index: p for p in dataset._all_pairs}
+    pairs = [pair_map[i] for i in pair_indices if i in pair_map]
+    N = len(pairs)
+    T, D = dataset.fm_shape[1], dataset.fm_shape[2]
+    X_norm = np.zeros((N, T, D), dtype=np.float32)
+
+    # Group positions by subject
+    subject_positions = defaultdict(list)
+    for pos, pair in enumerate(pairs):
+        subject_positions[pair.base_subject_id].append(pos)
+
+    for subj, positions in subject_positions.items():
+        source_indices = np.array([pairs[p].fm_source_index for p in positions], dtype=np.int64)
+        sort_order = np.argsort(source_indices)
+        X_raw = np.asarray(
+            x_array.get_orthogonal_selection(
+                (source_indices[sort_order], slice(None), slice(None))
+            ),
+            dtype=np.float32,
+        )
+        if len(positions) >= min_windows:
+            flat = X_raw.reshape(-1, D).astype(np.float64)
+            s_mean = flat.mean(0).astype(np.float32)
+            s_std = flat.std(0).astype(np.float32)
+            s_std[s_std < 1e-4] = 1.0
+        else:
+            s_mean, s_std = pop_mean, pop_std
+        X_subj_norm = (X_raw - s_mean[None, None, :]) / s_std[None, None, :]
+        for local_i, pos in enumerate(np.array(positions)[sort_order]):
+            X_norm[pos] = X_subj_norm[local_i]
+
+    model.eval()
+    ys, scores = [], []
+    with torch.no_grad():
+        for start in range(0, N, batch_size):
+            end = min(start + batch_size, N)
+            batch = torch.from_numpy(X_norm[start:end]).to(device=device, dtype=torch.float32)
+            probs = model.predict_scores(batch)   # depth-only, no IMU
+            scores.append(probs.cpu().numpy())
+            ys.append(np.array([pairs[i].label for i in range(start, end)]))
+    return np.concatenate(ys), np.concatenate(scores)
+
+
+def _require_zarr():
+    try:
+        import zarr
+    except ImportError as exc:
+        raise SystemExit("zarr not installed") from exc
+    return zarr
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +316,12 @@ def train_one_fold(
     fold_id: int,
     output_dir: Path | None,
     random_seed: int,
+    # Subject normalization for val/test (depth-only, no IMU)
+    paired_dataset: "PairedDepthIMUDataset | None" = None,
+    val_pair_indices: "np.ndarray | None" = None,
+    test_pair_indices: "np.ndarray | None" = None,
+    pop_mean: "np.ndarray | None" = None,
+    pop_std: "np.ndarray | None" = None,
 ) -> tuple[list[dict], list[dict]]:
     set_seed(random_seed + fold_id)
     model = model.to(device)
@@ -280,7 +361,14 @@ def train_one_fold(
                 torch.nn.utils.clip_grad_norm_(model.parameters(), float(params["grad_clip_norm"]))
             optimizer.step()
 
-        val_y, val_scores = collect_scores(model, val_loader, device)
+        # Val eval: subject norm when available, else population norm
+        if paired_dataset is not None and val_pair_indices is not None:
+            val_y, val_scores = collect_scores_subject_normalized(
+                model, paired_dataset, val_pair_indices, pop_mean, pop_std,
+                device, batch_size=int(params.get("batch_size", 64)),
+            )
+        else:
+            val_y, val_scores = collect_scores(model, val_loader, device)
         threshold, val_ba = find_best_threshold(val_y, val_scores)
         train_y, train_scores = collect_scores(model, train_eval_loader, device)
         history.append({
@@ -305,8 +393,18 @@ def train_one_fold(
     model.load_state_dict(best_state)
 
     metric_rows = []
-    for split, loader in [("train", train_eval_loader), ("val", val_loader), ("test", test_loader)]:
-        y, scores = collect_scores(model, loader, device)
+    for split, loader, sn_indices in [
+        ("train", train_eval_loader, None),
+        ("val",   val_loader,        val_pair_indices),
+        ("test",  test_loader,       test_pair_indices),
+    ]:
+        if (paired_dataset is not None and sn_indices is not None):
+            y, scores = collect_scores_subject_normalized(
+                model, paired_dataset, sn_indices, pop_mean, pop_std,
+                device, batch_size=int(params.get("batch_size", 64)),
+            )
+        else:
+            y, scores = collect_scores(model, loader, device)
         metrics = compute_metrics(y, scores, best_threshold)
         metric_rows.append({"fold_id": fold_id, "split": split, "threshold": best_threshold, **metrics})
 
@@ -502,6 +600,11 @@ def main() -> None:
                 fold_id=tune_fold["fold_id"],
                 output_dir=None,
                 random_seed=args.random_seed,
+                paired_dataset=dataset,
+                val_pair_indices=tune_fold["val"],
+                test_pair_indices=tune_fold["val"],  # placeholder
+                pop_mean=fm_mean,
+                pop_std=fm_std,
             )
             val_ba = next((r["balanced_accuracy"] for r in metric_rows if r["split"] == "val"), 0.0)
             return float(val_ba)
@@ -581,6 +684,11 @@ def main() -> None:
             fold_id=fold_id,
             output_dir=fold_dir,
             random_seed=args.random_seed,
+            paired_dataset=dataset,
+            val_pair_indices=fold["val"],
+            test_pair_indices=fold["test"],
+            pop_mean=fm_mean_f,
+            pop_std=fm_std_f,
         )
         for row in metric_rows:
             row["run_name"] = run_name
