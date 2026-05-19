@@ -210,6 +210,30 @@ The combined loss is:
 where $\mathcal{L}_\text{KL}$ uses $c_\omega(\mathbf{z}_i)$ detached as
 the target, training only the depth path for this term.
 
+\paragraph{V5 --- GRL adversarial + KL logit consistency.}
+V2 acts in the shared \emph{embedding} space; V3 acts in the
+\emph{prediction} space.  V5 applies both simultaneously, exerting
+alignment pressure at two complementary levels of the pipeline:
+\begin{equation}
+  \mathcal{L} = \mathcal{L}_\text{cls}^{(d)}
+              + \mathcal{L}_\text{cls}^{(i)}
+              + \underbrace{\mathcal{L}_\text{domain}}_{\text{embedding}}
+              + \lambda_\text{kl}\,T^2\,
+                \underbrace{\mathcal{L}_\text{KL}}_{\text{predictions}},
+  \label{eq:v5}
+\end{equation}
+where $\mathcal{L}_\text{domain}$ is the GRL adversarial term from
+Eq.~\eqref{eq:v2} and $\mathcal{L}_\text{KL}$ is the temperature-scaled
+KL term from Eq.~\eqref{eq:v3}.
+The GRL forces $\mathbf{z}_d$ to be distributionally indistinguishable
+from $\mathbf{z}_i$ in the shared space, while the KL additionally
+constrains the stress probability distributions produced by the shared
+classifier to agree between modalities.
+The discriminator $D_\eta$ is discarded at inference.
+The hypothesis is that neither embedding alignment nor prediction
+alignment alone is sufficient; constraining both levels jointly may
+remove residual misalignment that each single objective leaves behind.
+
 \subsubsection{Inference}
 
 All variants share the same depth-only inference path.  Subject-normalised
@@ -317,7 +341,7 @@ averaged across folds.  AUC is the primary metric (threshold-free).
 \draw[arrow]  (zd)     -- (cls);
 \draw[arrow]  (cls)    -- (logitsd);
 \draw[arrow, dashed, gray!60] (zi) -- (logitsi)
-    node[midway, right, lbl]{V3, V4};
+    node[midway, right, lbl]{V3, V4, V5};
 
 % Background panels
 \begin{scope}[on background layer]
@@ -393,6 +417,20 @@ averaged across folds.  AUC is the primary metric (threshold-free).
     {Unfreezes $h_i$, $\phi_\xi$; both paths\\jointly supervised};
 \end{scope}
 
+% --- V5: GRL + KL --------------------------------------------------
+\begin{scope}[shift={(8.3,-16.0)}]
+  \node[variant, fill=violet!5, draw=violet!50!black, minimum height=3.4cm]
+    (v5box) at (1.5,-1.2) {};
+  \node[font=\small\bfseries, text=violet!70!black] at (1.5, 0)
+    {V5 — GRL + KL};
+  \node[loss, fill=violet!10, draw=violet!40!black] at (1.5,-0.6)
+    {$\text{GRL}_\alpha(\mathbf{z}_d)\!\to\!D_\eta\;\Rightarrow\;\mathcal{L}_\text{domain}$};
+  \node[loss, fill=violet!10, draw=violet!40!black] at (1.5,-1.65)
+    {$\lambda_\text{kl}\,T^2\,\mathrm{KL}(p_i^\dagger\,\|\,p_d)$};
+  \node[font=\scriptsize, align=center] at (1.5,-2.65)
+    {Embedding \emph{and} prediction\\alignment simultaneously};
+\end{scope}
+
 % --- Shared total loss label ------------------------------------
 \node[font=\scriptsize, align=left, text=gray] at (-1.3,-19.8) {
   $^\dagger$ IMU logits detached for KL term (depth is student)
@@ -444,6 +482,8 @@ averaged across folds.  AUC is the primary metric (threshold-free).
   \textbf{V4} (joint) additionally unfreezes the IMU projection path,
   adds MSE on pre-shared representations, and provides the IMU path its
   own classification loss.
+  \textbf{V5} (GRL+KL) combines V2 and V3, applying adversarial
+  embedding alignment and KL prediction alignment simultaneously.
   \textit{Bottom}: At inference, all variants reduce to an identical
   depth-only forward pass with subject-normalised inputs.
 }
@@ -489,8 +529,9 @@ V1: Cosine
 V2: GRL
   & 0.688\,$\pm$\,0.029 & \textbf{0.643}\,$\pm$\,0.036
   & 0.669\,$\pm$\,0.130 & 0.617\,$\pm$\,0.193 & 0.250\,$\pm$\,0.053 \\
-V3: KL logits$^\dagger$ & -- & -- & -- & -- & -- \\
-V4: Joint$^\dagger$     & -- & -- & -- & -- & -- \\
+V3: KL logits$^\dagger$  & -- & -- & -- & -- & -- \\
+V4: Joint$^\dagger$      & -- & -- & -- & -- & -- \\
+V5: GRL + KL$^\dagger$   & -- & -- & -- & -- & -- \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -508,11 +549,15 @@ composition.  The GRL variant (V2) produces more balanced sensitivity/specificit
 adversarial alignment encouraging distributional rather than point-wise matching.  Both variants
 achieve nearly identical balanced accuracy ($0.643$) and MCC ($\approx 0.250$).
 
-The two pending variants address the core limitation identified in V1 and V2:
+The three pending variants address the core limitation identified in V1 and V2:
 embedding-space alignment does not directly supervise the stress-discriminative
 subspace.  V3 closes this gap by aligning \emph{classification distributions}
-rather than embedding vectors.  V4 further removes the asymmetry by jointly
-training the IMU projection path, providing the teacher-side representations
-their own supervised signal before they serve as alignment targets.
+rather than embedding vectors.  V4 further adds pre-shared MSE alignment,
+providing the tightest geometric constraint across the full projection path.
+V5 tests the orthogonal hypothesis: rather than deepening alignment at one
+level, it applies adversarial embedding alignment (V2) and prediction
+alignment (V3) simultaneously.  If the two objectives are complementary,
+V5 should outperform both; if they conflict or share the same information,
+performance should be similar to the better of V2 and V3.
 
 \end{document}
