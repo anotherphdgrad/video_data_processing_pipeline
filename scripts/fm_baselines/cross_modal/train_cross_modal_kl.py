@@ -9,15 +9,32 @@ subject-norm eval, checkpointing.
 
 Loss
 ----
-  L = L_cls_depth + λ_kl * T² * KL(softmax(logits_imu/T) || softmax(logits_depth/T))
+  L = L_cls_depth + L_cls_imu + λ_kl * T² * KL(softmax(logits_imu/T) || softmax(logits_depth/T))
 
 Where:
   logits_depth = classifier(shared_mlp(depth_in_proj(encoder(x_depth))))
   logits_imu   = classifier(shared_mlp(imu_in_proj(z_imu_frozen)))
 
-The IMU embedding is detached (frozen teacher).  The depth encoder is trained
-to produce stress probability distributions that match the IMU teacher's
-distributions in the shared classification space.
+  L_cls_depth : CrossEntropy on depth path — trains depth encoder
+  L_cls_imu   : CrossEntropy on IMU path  — trains imu_in_proj so its logits
+                 are meaningful stress predictions before they serve as KL targets
+  L_kl        : KL divergence — trains depth path to match IMU stress distribution
+
+WHY L_cls_imu is required
+--------------------------
+imu_in_proj is randomly initialised.  Without a supervised signal, logits_imu
+would be meaningless noise, making the KL target uninformative.  L_cls_imu
+anchors the IMU projection into the stress-discriminative region of the shared
+space before it is used as a teacher signal.
+
+The KL term keeps logits_imu *detached* — it only trains the depth path.
+L_cls_imu trains the IMU path separately.
+
+Difference from V4 (Joint)
+---------------------------
+V4 additionally adds MSE on the pre-shared projections (h_d, h_i), pulling
+both modalities toward a common intermediate representation.  V3 skips this,
+relying only on logit-level consistency.
 
 T² scaling follows Hinton et al. (2015) to preserve gradient magnitude.
 At inference: only depth path used (identical to all other variants).
@@ -289,27 +306,33 @@ def train_one_fold(
             imu_embed  = imu_embed.to(device=device, dtype=torch.float32)
             labels     = labels.to(device=device,   dtype=torch.long)
 
-            # Depth path
-            r_d        = model.encoder(depth_x)
-            h_d        = model.depth_in_proj(r_d)
-            z_depth    = model.shared_mlp(h_d)
-            logits_d   = model.classifier(z_depth)
-            loss_cls   = F.cross_entropy(logits_d, labels)
+            # ── Depth path ──────────────────────────────────────────────
+            r_d      = model.encoder(depth_x)
+            h_d      = model.depth_in_proj(r_d)
+            z_depth  = model.shared_mlp(h_d)
+            logits_d = model.classifier(z_depth)
+            loss_cls_depth = F.cross_entropy(logits_d, labels)
 
-            # IMU path through shared classifier (teacher embedding frozen)
-            h_i        = model.imu_in_proj(imu_embed.detach())
-            z_imu      = model.shared_mlp(h_i)
-            logits_i   = model.classifier(z_imu).detach()   # target, no grad
+            # ── IMU path (imu_embed frozen, imu_in_proj trainable) ───────
+            # imu_embed is detached — no gradient back to LIMU-BERT.
+            # imu_in_proj, shared_mlp, and classifier receive gradients
+            # from loss_cls_imu so logits_i become meaningful stress
+            # predictions before they are used as the KL target.
+            h_i      = model.imu_in_proj(imu_embed.detach())
+            z_imu    = model.shared_mlp(h_i)
+            logits_i = model.classifier(z_imu)
+            loss_cls_imu = F.cross_entropy(logits_i, labels)
 
-            # KL: train depth to match IMU stress distribution in shared space
-            # F.kl_div(log_p_student, p_teacher) = KL(p_teacher || p_student)
+            # ── KL: depth matches IMU stress distribution ─────────────────
+            # Detach logits_i so KL only trains the depth path.
+            # logits_i is already meaningful because loss_cls_imu trained it.
             loss_kl = F.kl_div(
                 F.log_softmax(logits_d / T, dim=1),
-                F.softmax(logits_i / T, dim=1),
+                F.softmax(logits_i.detach() / T, dim=1),
                 reduction="batchmean",
-            ) * (T ** 2)   # Hinton scaling
+            ) * (T ** 2)   # Hinton T² scaling
 
-            loss = loss_cls + lambda_kl * loss_kl
+            loss = loss_cls_depth + loss_cls_imu + lambda_kl * loss_kl
 
             optimizer.zero_grad()
             loss.backward()

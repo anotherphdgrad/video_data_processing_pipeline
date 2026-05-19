@@ -1,13 +1,6 @@
 % Cross-Modal Depth-IMU Stress Detection
 % Suitable for ACM SenSys submission
 % Compile with: pdflatex cross_modal_sensys.tex
-%
-% Required packages (add to preamble if embedding in larger paper):
-%   \usepackage{tikz}
-%   \usepackage{amsmath,amssymb}
-%   \usepackage{booktabs}
-%   \usepackage{xcolor}
-%   \usetikzlibrary{arrows.meta,positioning,fit,shapes.geometric,backgrounds,calc}
 
 \documentclass[sigconf,anonymous=false]{acmart}
 
@@ -72,165 +65,181 @@ window representation $\mathbf{X}_d \in \mathbb{R}^{T \times D}$.
 
 \paragraph{IMU modality.}
 Each co-registered 30\,s window of 3-axis wrist acceleration is sampled at
-64\,Hz, giving a raw sequence $\mathbf{X}_i \in \mathbb{R}^{1920 \times 3}$.
-FLIRT~\cite{flirt2021} hand-crafted features are computed per window, and the
+64\,Hz.  FLIRT hand-crafted features are computed per window and the
 absolute jelly-baseline delta is appended, yielding a 176-dimensional FLIRT
-vector $\boldsymbol{\phi}(\mathbf{X}_i) \in \mathbb{R}^{176}$.  A temporal
-context sequence of length $L=12$ is formed by look-back concatenation within
-each (participant, task) group---replicating the input format of the trained
-IMU model---producing $\mathbf{F}_i \in \mathbb{R}^{L \times 176}$.
+vector.  A temporal context sequence of length $L=12$ is formed by look-back
+concatenation within each (participant, task) group, producing
+$\mathbf{F}_i \in \mathbb{R}^{L \times 176}$.
 
-\subsubsection{Model Architecture}
+\subsubsection{Shared Architecture}
 
-Figure~\ref{fig:pipeline} illustrates the full cross-modal training and
-inference pipeline.  The architecture comprises four trainable components and
-one frozen teacher.
+Figure~\ref{fig:pipeline} illustrates the common backbone shared by all
+four alignment variants.
 
 \paragraph{Depth TCN encoder $f_\theta$.}
-A Temporal Convolutional Network processes the DINOv2 frame sequence
-$\mathbf{X}_d$, applying dilated causal convolutions followed by learned
-attention pooling to produce a window-level depth representation:
-\begin{equation}
-  \mathbf{r}_d = f_\theta(\mathbf{X}_d) \in \mathbb{R}^{D_\text{TCN}}.
-  \label{eq:depth_enc}
-\end{equation}
-The TCN encoder is \emph{warm-started} from the fold-specific checkpoint
-of the standalone depth classifier, providing a strong initialisation that
-already captures rudimentary stress-relevant temporal patterns.
+A dilated Temporal Convolutional Network processes $\mathbf{X}_d$ with
+learned attention pooling, producing a window-level representation
+$\mathbf{r}_d = f_\theta(\mathbf{X}_d) \in \mathbb{R}^{D_\text{TCN}}$.
+The encoder is warm-started from the fold-specific standalone depth checkpoint.
 
 \paragraph{Frozen IMU teacher $g_\psi$.}
-A LIMU-BERT transformer~\cite{limubert2021} pre-trained via masked feature
-prediction and fine-tuned for stress classification processes the FLIRT
-context sequence $\mathbf{F}_i$.  The first-token representation
-$\mathbf{e}_i \in \mathbb{R}^{72}$ is extracted as the teacher embedding.
-All parameters $\psi$ are frozen during cross-modal training:
-\begin{equation}
-  \mathbf{e}_i = g_\psi(\mathbf{F}_i) \in \mathbb{R}^{72}.
-  \label{eq:imu_enc}
-\end{equation}
+A LIMU-BERT transformer fine-tuned for stress classification processes
+$\mathbf{F}_i$.  The first-token representation
+$\mathbf{e}_i = g_\psi(\mathbf{F}_i) \in \mathbb{R}^{72}$
+is extracted as the teacher embedding; all parameters $\psi$ are frozen.
 
 \paragraph{Per-modality input projections.}
-Because depth and IMU representations have different dimensionalities
-($D_\text{TCN}$ vs.\ 72), two separate linear projections map each
-modality to a common shared dimension $D_s$:
+Two linear layers $h_d$, $h_i$ map each modality to a shared dimension $D_s$:
 \begin{equation}
-  \tilde{\mathbf{r}}_d = h_d(\mathbf{r}_d), \quad
-  \tilde{\mathbf{e}}_i = h_i(\mathbf{e}_i),
-  \quad h_d, h_i : \mathbb{R}^{\cdot} \to \mathbb{R}^{D_s}.
+  \tilde{\mathbf{r}}_d = h_d(\mathbf{r}_d),\quad
+  \tilde{\mathbf{e}}_i = h_i(\mathbf{e}_i),\quad
+  h_d,h_i : \mathbb{R}^{\cdot}\to\mathbb{R}^{D_s}.
   \label{eq:proj}
 \end{equation}
 
-\paragraph{Shared processing MLP $\phi_\xi$.}
-The projected representations from \emph{both} modalities pass through
-the \emph{same} MLP (identical weights $\xi$), enforcing a common
-representational geometry:
+\paragraph{Shared MLP $\phi_\xi$.}
+The \emph{same} MLP (LayerNorm $\to$ GELU $\to$ Linear) processes both
+modalities, enforcing a common representational geometry:
 \begin{equation}
-  \mathbf{z}_d = \phi_\xi(\tilde{\mathbf{r}}_d), \quad
+  \mathbf{z}_d = \phi_\xi(\tilde{\mathbf{r}}_d),\quad
   \mathbf{z}_i = \phi_\xi(\tilde{\mathbf{e}}_i).
   \label{eq:shared}
 \end{equation}
-The shared MLP comprises LayerNorm, GELU activation, Dropout, and a linear
-layer.  The same weights $\xi$ receive gradients from both the depth
-classification loss and the cross-modal alignment loss, incentivising a
-space in which stress-discriminative structure from the IMU teacher is
-mirrored by the depth encoder.
 
-\paragraph{Stress classifier $c_\omega$ and IMU decoder $q_\rho$.}
-A two-layer MLP $c_\omega$ maps the depth shared representation to class
-logits.  An optional IMU decoder $q_\rho$ reconstructs the teacher
-embedding from the shared depth representation.
+\paragraph{Stress classifier $c_\omega$.}
+A two-layer MLP (LayerNorm $\to$ Linear $\to$ GELU $\to$ Dropout $\to$ Linear)
+maps $\mathbf{z}_d$ to binary stress logits.
+Stress probability is $p = \mathrm{softmax}(c_\omega(\mathbf{z}_d))_1$.
 
-\subsubsection{Training Objective}
+\subsubsection{Alignment Objective Variants}
 
-The total training loss combines three terms:
+All variants share the same classification loss on the depth path:
 \begin{equation}
-  \mathcal{L} = \mathcal{L}_\text{cls}
-              + \lambda_\text{align}\,\mathcal{L}_\text{align}
-              + \lambda_\text{recon}\,\mathcal{L}_\text{recon},
-  \label{eq:loss}
-\end{equation}
-where $\lambda_\text{align}$ and $\lambda_\text{recon}$ are tuned by Optuna.
-
-\paragraph{Classification loss.}
-Standard cross-entropy on stress labels using the depth path:
-\begin{equation}
-  \mathcal{L}_\text{cls}
-    = \text{CrossEntropy}\!\left(c_\omega(\mathbf{z}_d),\, y\right).
+  \mathcal{L}_\text{cls} = \text{CE}(c_\omega(\mathbf{z}_d),\, y).
   \label{eq:cls}
 \end{equation}
+They differ in how the IMU teacher supervises the shared space.
 
-\paragraph{Cross-modal alignment loss.}
-Cosine dissimilarity between the depth and IMU shared representations,
-pulling the depth encoder toward the IMU representation manifold:
+\paragraph{V1 --- Cosine alignment.}
+Pulls the depth and IMU shared representations together via cosine
+dissimilarity, providing a point-wise geometric constraint:
 \begin{equation}
-  \mathcal{L}_\text{align}
-    = 1 - \frac{\mathbf{z}_d \cdot \mathbf{z}_i}
-               {\|\mathbf{z}_d\|_2\,\|\mathbf{z}_i\|_2}.
-  \label{eq:align}
+  \mathcal{L} = \mathcal{L}_\text{cls}
+              + \lambda_a\underbrace{\!\left(1
+              - \tfrac{\mathbf{z}_d\cdot\mathbf{z}_i}
+                      {\|\mathbf{z}_d\|\|\mathbf{z}_i\|}\right)
+              }_{\mathcal{L}_\text{cosine}}.
+  \label{eq:v1}
 \end{equation}
-The IMU path ($g_\psi$, $h_i$) is frozen; gradients from
-$\mathcal{L}_\text{align}$ flow only through $h_d$, $f_\theta$, and the
-shared weights $\xi$ of $\phi_\xi$.
+The IMU path is fully frozen; gradients flow only through the depth branch.
 
-\paragraph{IMU reconstruction loss.}
-When the decoder is active, the depth shared representation is required to
-recover the teacher embedding:
+\paragraph{V2 --- Gradient Reversal Layer (GRL).}
+Replaces the point-wise constraint with an adversarial distributional
+alignment.  A modality discriminator $D_\eta$ (2-layer MLP) tries to
+classify whether a shared vector originates from the depth or IMU path.
+A Gradient Reversal Layer inverts the gradient sign with scale $\alpha$
+during backpropagation, forcing the depth encoder to confuse the
+discriminator while the discriminator trains normally:
 \begin{equation}
-  \mathcal{L}_\text{recon}
-    = \left\| q_\rho(\mathbf{z}_d) - \mathbf{e}_i \right\|_2^2.
-  \label{eq:recon}
+  \mathcal{L} = \mathcal{L}_\text{cls}
+              + \underbrace{\text{CE}(D_\eta(\mathbf{z}_\text{all}),
+                            \mathbf{d}_\text{all})
+              }_{\mathcal{L}_\text{domain}},
+  \label{eq:v2}
 \end{equation}
-This provides a pixel-level reconstruction constraint complementary to the
-distributional alignment of Eq.~\eqref{eq:align}.
+where $\mathbf{z}_\text{all} = [\text{GRL}_\alpha(\mathbf{z}_d);\,
+\mathbf{z}_i^{\text{sg}}]$ concatenates GRL-wrapped depth and
+stop-gradient IMU representations, and $\mathbf{d}_\text{all}$ are the
+corresponding modality labels $\{0,1\}$.
+At training equilibrium, the discriminator is forced to chance accuracy,
+indicating that depth representations are distributionally indistinguishable
+from IMU representations.  $D_\eta$ is discarded at inference.
 
-\paragraph{Gradient flow summary.}  During a training step, only the depth
-path parameters $\{\theta, h_d, \xi, \omega, \rho\}$ are updated.
-The teacher parameters $\psi$ and $h_i$ receive no gradients.
-The shared weights $\xi$ receive gradients from both $\mathcal{L}_\text{cls}$
-(via $c_\omega$) and $\mathcal{L}_\text{align}$ (via the cosine term),
-which jointly shape the shared space to be both stress-discriminative and
-modality-aligned.
+\paragraph{V3 --- KL logit consistency.}
+Rather than aligning embedding distributions, V3 directly aligns the
+\emph{stress predictions} of both modalities in the shared classification
+space.  The shared classifier $c_\omega$ is applied to both $\mathbf{z}_d$
+and $\mathbf{z}_i$.  The IMU projection ($h_i$, $\phi_\xi$) is \emph{not
+frozen}---it receives its own classification loss $\mathcal{L}_\text{cls}^{(i)}$
+so that $c_\omega(\mathbf{z}_i)$ produces meaningful stress predictions before
+serving as the KL target.  The depth path is then trained to match those
+predictions:
+\begin{equation}
+  \mathcal{L} = \mathcal{L}_\text{cls}^{(d)}
+              + \mathcal{L}_\text{cls}^{(i)}
+              + \lambda_\text{kl}\,T^2\underbrace{
+              \mathrm{KL}\!\left(
+                \sigma\!\!\left(\tfrac{c_\omega(\mathbf{z}_i)^\text{sg}}{T}\right)
+                \,\Big\|\,
+                \sigma\!\!\left(\tfrac{c_\omega(\mathbf{z}_d)}{T}\right)
+              \right)}_{\mathcal{L}_\text{KL}},
+  \label{eq:v3}
+\end{equation}
+where $(\cdot)^\text{sg}$ denotes stop-gradient and $T$ is a temperature
+hyperparameter tuned by Optuna.
+The $T^2$ factor preserves gradient magnitude~\cite{hinton2015distilling}.
+The KL term trains only the depth path; $\mathcal{L}_\text{cls}^{(i)}$
+trains only the IMU projection independently.
 
-\subsection{Inference}
+\paragraph{V4 --- Joint fine-tuning.}
+Extends V3 by adding an explicit pre-shared alignment term.
+Both IMU and depth projection paths are trained (as in V3), but V4
+additionally pulls the \emph{intermediate} representations together
+before they enter the shared MLP.
+First, an MSE loss directly aligns the pre-shared projections, pulling
+both paths toward a common intermediate representation:
+\begin{equation}
+  \mathcal{L}_\text{mse} = \|\tilde{\mathbf{r}}_d - \tilde{\mathbf{e}}_i\|_2^2.
+  \label{eq:mse}
+\end{equation}
+Second, the IMU path receives its own classification supervision, ensuring
+that the unfrozen IMU projection maps to a stress-discriminative region of
+the shared space:
+\begin{equation}
+  \mathcal{L}_\text{cls}^{(i)} = \text{CE}(c_\omega(\mathbf{z}_i),\, y).
+  \label{eq:cls_imu}
+\end{equation}
+The combined loss is:
+\begin{equation}
+  \mathcal{L} = \mathcal{L}_\text{cls}
+              + \lambda_i\,\mathcal{L}_\text{cls}^{(i)}
+              + \lambda_m\,\mathcal{L}_\text{mse}
+              + \lambda_\text{kl}\,T^2\,\mathcal{L}_\text{KL},
+  \label{eq:v4}
+\end{equation}
+where $\mathcal{L}_\text{KL}$ uses $c_\omega(\mathbf{z}_i)$ detached as
+the target, training only the depth path for this term.
 
-At deployment, only the depth camera is required.  The IMU teacher,
-input projections $h_i$, and alignment losses are discarded.  Given a
-30\,s depth window:
+\subsubsection{Inference}
+
+All variants share the same depth-only inference path.  Subject-normalised
+embeddings $\tilde{\mathbf{X}}_d^{(s)}$ (z-scored per test participant $s$
+from their own windows) are passed through the depth branch:
 \begin{equation}
   \hat{y} = \arg\max\; c_\omega\!\left(
-    \phi_\xi\!\left(h_d\!\left(f_\theta(\mathbf{X}_d)\right)\right)
-  \right).
+    \phi_\xi\!\left(h_d\!\left(f_\theta\!\left(
+      \tilde{\mathbf{X}}_d^{(s)}\right)\right)\right)\right).
   \label{eq:infer}
 \end{equation}
-To mitigate inter-subject distributional shift---a dominant source of
-generalisation error in participant-disjoint evaluation---we apply
-\emph{subject-normalised inference}: for each test participant $s$, raw
-DINOv2 frame embeddings are z-scored by that participant's own empirical
-mean $\boldsymbol{\mu}_s$ and standard deviation $\boldsymbol{\sigma}_s$,
-computed from their test windows (no labels used):
-\begin{equation}
-  \tilde{\mathbf{X}}_d^{(s)}
-    = \frac{\mathbf{X}_d^{(s)} - \boldsymbol{\mu}_s}{\boldsymbol{\sigma}_s}.
-  \label{eq:subj_norm}
-\end{equation}
+The IMU teacher $g_\psi$, projections $h_i$, and any alignment components
+(discriminator, KL targets) are discarded entirely.
 
 % =============================================================================
 \subsection{Experimental Setup}
 \label{sec:eval}
 
 \paragraph{Evaluation protocol.}
-We follow the shared evaluation contract across all modalities:
-participant-disjoint folds via GroupKFold($n=5$) grouped by
+Participant-disjoint folds via GroupKFold($n=5$) grouped by
 \texttt{base\_subject\_id}, with inner validation via
-GroupShuffleSplit(test\_size=0.2, seed=$42+\text{fold}$).
-Hyperparameters are tuned with Optuna (30 trials) on fold 1 only and
-evaluated on all 5 folds.  The decision threshold is selected by sweeping
-19 values on the validation set and applied unchanged to the test set.
+GroupShuffleSplit(test\_size$=0.2$, seed$=42+\text{fold}$).
+Hyperparameters are tuned by Optuna (50 trials) on fold 1 and applied to
+all 5 folds.  The decision threshold is swept across 19 values on the
+validation set and applied unchanged to the test set.
+All cross-modal variants use subject-normalised inference at val and test time.
 
 \paragraph{Metrics.}
-We report test-set AUC (ROC), Balanced Accuracy (BA), Sensitivity,
-Specificity, and Matthews Correlation Coefficient (MCC), averaged across
-folds.  AUC is our primary metric as it is threshold-free.
+AUC (ROC), Balanced Accuracy (BA), Sensitivity, Specificity, and MCC,
+averaged across folds.  AUC is the primary metric (threshold-free).
 
 % =============================================================================
 \subsection{Pipeline Diagram}
@@ -239,160 +248,204 @@ folds.  AUC is our primary metric as it is threshold-free.
 \begin{figure*}[t]
 \centering
 \begin{tikzpicture}[
-  >=Stealth,
-  font=\small,
-  box/.style={
-    rectangle, rounded corners=3pt, draw, thick,
-    minimum width=2.2cm, minimum height=0.7cm,
-    text centered, inner sep=4pt
-  },
-  frozen/.style={box, fill=blue!10, draw=blue!50!black},
-  trainable/.style={box, fill=orange!15, draw=orange!60!black},
-  shared/.style={box, fill=green!15, draw=green!50!black},
-  loss/.style={box, fill=red!10, draw=red!50!black,
-               minimum width=1.8cm, minimum height=0.6cm},
-  arrow/.style={->, thick},
-  darrow/.style={->, thick, blue!60!black, dashed},
-  label/.style={font=\scriptsize\itshape, text=gray},
+  >=Stealth, font=\small,
+  box/.style={rectangle, rounded corners=3pt, draw, thick,
+    minimum width=2.0cm, minimum height=0.65cm, text centered, inner sep=3pt},
+  frozen/.style    ={box, fill=blue!10,   draw=blue!50!black},
+  trainable/.style ={box, fill=orange!15, draw=orange!60!black},
+  shared/.style    ={box, fill=green!15,  draw=green!50!black},
+  loss/.style      ={box, fill=red!10,    draw=red!50!black,
+                     minimum width=1.6cm, minimum height=0.6cm},
+  variant/.style   ={rectangle, rounded corners=4pt, draw, thick,
+                     inner sep=6pt, minimum width=3.6cm},
+  arrow/.style     ={->, thick},
+  darrow/.style    ={->, thick, blue!60!black, dashed},
+  lbl/.style       ={font=\scriptsize\itshape, text=gray},
 ]
 
-% -----------------------------------------------------------------------
-% LEFT COLUMN: Depth pipeline
-% -----------------------------------------------------------------------
-\node[trainable] (frames)     at (0,0)      {DINOv2 frames\\$\mathbf{X}_d \in \mathbb{R}^{75\times768}$};
-\node[trainable] (tcn)        at (0,-1.6)   {TCN Encoder $f_\theta$\\(trainable, warm-start)};
-\node[trainable] (depth_repr) at (0,-3.0)   {$\mathbf{r}_d \in \mathbb{R}^{D_\text{TCN}}$};
-\node[trainable] (hd)         at (0,-4.2)   {Input Proj.\ $h_d$\\Linear($D_\text{TCN} \to D_s$)};
+% =====================================================================
+% SHARED BACKBONE
+% =====================================================================
 
-% -----------------------------------------------------------------------
-% RIGHT COLUMN: IMU teacher pipeline (frozen)
-% -----------------------------------------------------------------------
-\node[frozen] (acc)   at (6.5,0)    {ACC Sequence\\$\mathbf{X}_i \in \mathbb{R}^{1920\times3}$};
-\node[frozen] (flirt) at (6.5,-1.6) {FLIRT Features\\$\boldsymbol{\phi}(\mathbf{X}_i) \in \mathbb{R}^{176}$};
-\node[frozen] (limu)  at (6.5,-3.0) {LIMU-BERT $g_\psi$\\(frozen teacher)};
-\node[frozen] (eimu)  at (6.5,-4.2) {$\mathbf{e}_i \in \mathbb{R}^{72}$};
-\node[frozen] (hi)    at (6.5,-5.4) {Input Proj.\ $h_i$\\Linear($72 \to D_s$)\ \ \textit{frozen}};
+% Depth path (orange, left)
+\node[trainable] (frames) at (0, 0)
+  {DINOv2 frames\\$\mathbf{X}_d \!\in\! \mathbb{R}^{75\times768}$};
+\node[trainable] (tcn)    at (0,-1.5)
+  {TCN $f_\theta$\\(warm-start)};
+\node[trainable] (hd)     at (0,-3.0)
+  {Proj.\ $h_d$\\$D_\text{TCN}\!\to\! D_s$};
 
-\node[label] at (6.5, 0.65) {IMU Branch (training only, discarded at inference)};
+% IMU teacher path (blue, right)
+\node[frozen] (limu)  at (7.5, 0)
+  {LIMU-BERT $g_\psi$\\(frozen teacher)};
+\node[frozen] (ei)    at (7.5,-1.5)
+  {$\mathbf{e}_i \!\in\! \mathbb{R}^{72}$};
+\node[frozen] (hi)    at (7.5,-3.0)
+  {Proj.\ $h_i$\\$72\!\to\! D_s$};
 
-% -----------------------------------------------------------------------
-% CENTRE: Shared MLP
-% -----------------------------------------------------------------------
-\node[shared] (shared) at (3.25,-6.8)
-  {Shared MLP $\phi_\xi$\\LayerNorm $\to$ GELU $\to$ Linear\\\textit{same weights for both modalities}};
+\node[lbl] at (7.5, 0.65)
+  {\textit{IMU branch: training only, discarded at inference}};
 
-\node[trainable] (zd) at (0,-8.2)    {$\mathbf{z}_d \in \mathbb{R}^{D_s}$};
-\node[frozen]    (zi) at (6.5,-8.2)  {$\mathbf{z}_i \in \mathbb{R}^{D_s}$};
+% Pre-shared labels
+\node[lbl] at (0.3,-3.85)   {$\tilde{\mathbf{r}}_d$};
+\node[lbl] at (7.2,-3.85)   {$\tilde{\mathbf{e}}_i$};
 
-% -----------------------------------------------------------------------
-% LOSSES
-% -----------------------------------------------------------------------
-\node[trainable] (cls_head) at (0,-9.6)    {Classifier $c_\omega$};
-\node[loss]      (lcls)     at (-2.2,-11.0) {$\mathcal{L}_\text{cls}$\\CrossEntropy};
-\node[loss]      (lalign)   at (3.25,-11.0) {$\mathcal{L}_\text{align}$\\$1-\cos(\mathbf{z}_d,\mathbf{z}_i)$};
-\node[loss]      (lrecon)   at (7.5,-11.0)  {$\mathcal{L}_\text{recon}$\\$\|q_\rho(\mathbf{z}_d)-\mathbf{e}_i\|^2$};
-\node[trainable] (decoder)  at (6.5,-9.6)   {Decoder $q_\rho$\\(optional)};
+% Shared MLP (center)
+\node[shared] (shared) at (3.75,-5.2)
+  {Shared MLP $\phi_\xi$\quad\textit{(same weights both modalities)}};
 
-% Total loss
-\node[loss, fill=red!25, minimum width=3.5cm] (ltotal) at (3.25,-12.4)
-  {$\mathcal{L} = \mathcal{L}_\text{cls} + \lambda_a\mathcal{L}_\text{align} + \lambda_r\mathcal{L}_\text{recon}$};
+% z_d, z_i
+\node[trainable] (zd) at (1.5,-6.7) {$\mathbf{z}_d\!\in\!\mathbb{R}^{D_s}$};
+\node[frozen]    (zi) at (6.0,-6.7) {$\mathbf{z}_i\!\in\!\mathbb{R}^{D_s}$};
 
-% -----------------------------------------------------------------------
-% INFERENCE PATH (bottom)
-% -----------------------------------------------------------------------
-\node[box, fill=gray!10, draw=gray!60] (infer) at (0,-14.0)
-  {Depth-only Inference: $\hat{y} = \arg\max\; c_\omega(\phi_\xi(h_d(f_\theta(\tilde{\mathbf{X}}_d^{(s)}))))$};
+% Classifier → logits
+\node[trainable] (cls)    at (1.5,-8.0)  {Classifier $c_\omega$};
+\node[trainable] (logitsd) at (1.5,-9.2) {logits$_d$};
+\node            (logitsi) at (6.0,-9.2) {logits$_i = c_\omega(\mathbf{z}_i)$};
 
-% -----------------------------------------------------------------------
-% ARROWS: depth branch
-% -----------------------------------------------------------------------
-\draw[arrow, orange!70!black] (frames)     -- (tcn);
-\draw[arrow, orange!70!black] (tcn)        -- (depth_repr);
-\draw[arrow, orange!70!black] (depth_repr) -- (hd);
-\draw[arrow, orange!70!black] (hd)         -- (shared -| hd)
-    node[midway, left, label]{$\tilde{\mathbf{r}}_d$};
+% Backbone arrows
+\draw[arrow, orange!70!black] (frames) -- (tcn);
+\draw[arrow, orange!70!black] (tcn)    -- (hd);
+\draw[arrow, orange!70!black] (hd)     -- (shared -| hd)
+    node[midway, left, lbl]{};
+\draw[darrow]                 (limu)   -- (ei);
+\draw[darrow]                 (ei)     -- (hi);
+\draw[darrow]                 (hi)     -- (shared -| hi);
 
-% -----------------------------------------------------------------------
-% ARROWS: IMU teacher branch (dashed = frozen)
-% -----------------------------------------------------------------------
-\draw[darrow] (acc)   -- (flirt);
-\draw[darrow] (flirt) -- (limu);
-\draw[darrow] (limu)  -- (eimu);
-\draw[darrow] (eimu)  -- (hi);
-\draw[darrow] (hi)    -- (shared -| hi)
-    node[midway, right, label]{$\tilde{\mathbf{e}}_i$};
-
-% -----------------------------------------------------------------------
-% ARROWS: shared → z
-% -----------------------------------------------------------------------
-\draw[arrow] (shared) -- (zd)
-    node[midway, left, label]{depth};
-\draw[arrow] (shared) -- (zi)
-    node[midway, right, label]{IMU};
-
-% -----------------------------------------------------------------------
-% ARROWS: losses
-% -----------------------------------------------------------------------
-\draw[arrow] (zd) -- (cls_head);
-\draw[arrow] (cls_head) -- (lcls);
-\draw[arrow, dashed] (zd)      -- (lalign);
-\draw[arrow, dashed] (zi)      -- (lalign);
-\draw[arrow] (zd)      -- (decoder);
-\draw[darrow] (zi)     -- (lrecon);
-\draw[arrow] (decoder) -- (lrecon);
-
-\draw[arrow, red!70!black] (lcls)   -- (ltotal);
-\draw[arrow, red!70!black] (lalign) -- (ltotal);
-\draw[arrow, red!70!black] (lrecon) -- (ltotal);
-
-% -----------------------------------------------------------------------
-% ARROWS: inference
-% -----------------------------------------------------------------------
-\draw[arrow, gray!60!black, thick] (ltotal) -- (infer)
-    node[midway, right, label]{deploy};
-
-% -----------------------------------------------------------------------
-% LEGEND
-% -----------------------------------------------------------------------
-\begin{scope}[shift={(8.8,-3.0)}]
-  \node[trainable, minimum width=1.4cm, minimum height=0.4cm, font=\scriptsize]
-    (leg1) at (0,0) {Trainable};
-  \node[frozen,    minimum width=1.4cm, minimum height=0.4cm, font=\scriptsize]
-    (leg2) at (0,-0.7) {Frozen};
-  \node[shared,    minimum width=1.4cm, minimum height=0.4cm, font=\scriptsize]
-    (leg3) at (0,-1.4) {Shared weights};
-  \node[loss,      minimum width=1.4cm, minimum height=0.4cm, font=\scriptsize]
-    (leg4) at (0,-2.1) {Loss};
-  \node[font=\scriptsize, left=0pt of leg1] {};
-  \draw[arrow, orange!70!black] (-0.9,-3.0) -- (-0.3,-3.0)
-    node[right, font=\scriptsize]{Gradient flow};
-  \draw[darrow]                 (-0.9,-3.5) -- (-0.3,-3.5)
-    node[right, font=\scriptsize]{No gradient};
-\end{scope}
+\draw[arrow]  (shared) -- (zd)    node[midway, left,  lbl]{depth};
+\draw[arrow]  (shared) -- (zi)    node[midway, right, lbl]{IMU};
+\draw[arrow]  (zd)     -- (cls);
+\draw[arrow]  (cls)    -- (logitsd);
+\draw[arrow, dashed, gray!60] (zi) -- (logitsi)
+    node[midway, right, lbl]{V3, V4};
 
 % Background panels
 \begin{scope}[on background layer]
-  \node[fill=orange!5, rounded corners=5pt, fit=(frames)(tcn)(depth_repr)(hd),
-        inner sep=6pt] {};
-  \node[fill=blue!5,   rounded corners=5pt, fit=(acc)(flirt)(limu)(eimu)(hi),
-        inner sep=6pt] {};
+  \node[fill=orange!5, rounded corners=5pt,
+        fit=(frames)(tcn)(hd), inner sep=5pt] {};
+  \node[fill=blue!5,   rounded corners=5pt,
+        fit=(limu)(ei)(hi), inner sep=5pt] {};
+\end{scope}
+
+% Divider line
+\draw[gray!50, thick, dashed]
+  (-1.8,-10.4) -- (9.8,-10.4)
+  node[midway, above, font=\scriptsize\bfseries, text=gray!80]
+  {Alignment objectives (training only)};
+
+% =====================================================================
+% VARIANT PANELS  (2 × 2 grid below backbone)
+% =====================================================================
+
+% --- V1: Cosine ---------------------------------------------------
+\begin{scope}[shift={(-1.3,-12.0)}]
+  \node[variant, fill=orange!5, draw=orange!60!black, minimum height=2.6cm]
+    (v1box) at (1.5, -0.8) {};
+  \node[font=\small\bfseries, text=orange!70!black] at (1.5, 0)
+    {V1 — Cosine Alignment};
+  \node[loss, fill=orange!10] (lcosine) at (1.5, -0.9)
+    {$\mathcal{L}_\text{cos}=1-\cos(\mathbf{z}_d,\mathbf{z}_i)$};
+  \node[font=\scriptsize, align=center] at (1.5,-1.9)
+    {Point-wise geometric\\constraint in $\mathbb{R}^{D_s}$};
+\end{scope}
+
+% --- V2: GRL -------------------------------------------------------
+\begin{scope}[shift={(3.5,-12.0)}]
+  \node[variant, fill=purple!5, draw=purple!50!black, minimum height=2.6cm]
+    (v2box) at (1.5, -0.8) {};
+  \node[font=\small\bfseries, text=purple!70!black] at (1.5, 0)
+    {V2 — GRL Adversarial};
+  \node[loss, fill=purple!10, draw=purple!40!black] (lgrl) at (1.5, -0.7)
+    {$\text{GRL}_\alpha(\mathbf{z}_d)\!\to\!D_\eta$};
+  \node[loss, fill=purple!10, draw=purple!40!black] at (1.5,-1.6)
+    {$\mathcal{L}_\text{domain}=\text{CE}(D_\eta,\mathbf{d})$};
+  \node[font=\scriptsize, align=center] at (1.5,-2.35)
+    {Adversarial: depth enc.\\confuses discriminator};
+\end{scope}
+
+% --- V3: KL Logits -------------------------------------------------
+\begin{scope}[shift={(8.3,-12.0)}]
+  \node[variant, fill=teal!5, draw=teal!50!black, minimum height=2.6cm]
+    (v3box) at (1.5,-0.8) {};
+  \node[font=\small\bfseries, text=teal!70!black] at (1.5, 0)
+    {V3 — KL Logit Consistency};
+  \node[loss, fill=teal!10, draw=teal!40!black] (lkl) at (1.5, -0.7)
+    {$\mathcal{L}_\text{KL}=T^2\,\mathrm{KL}(p_i\,\|\,p_d)$};
+  \node[font=\scriptsize, align=center] at (1.5,-1.6)
+    {$p_d=\sigma(c_\omega(\mathbf{z}_d)/T)$\\$p_i=\sigma(c_\omega(\mathbf{z}_i)/T)^\dagger$};
+  \node[font=\scriptsize, align=center] at (1.5,-2.35)
+    {Align stress predictions\\in classification space};
+\end{scope}
+
+% --- V4: Joint Fine-tuning ----------------------------------------
+\begin{scope}[shift={(-1.3,-16.0)}]
+  \node[variant, fill=cyan!5, draw=cyan!50!black, minimum height=3.4cm]
+    (v4box) at (1.5,-1.2) {};
+  \node[font=\small\bfseries, text=cyan!70!black] at (1.5, 0)
+    {V4 — Joint Fine-tuning};
+  \node[loss, fill=cyan!10, draw=cyan!40!black] at (1.5,-0.75)
+    {$\mathcal{L}_\text{cls}^{(i)}=\text{CE}(c_\omega(\mathbf{z}_i), y)$};
+  \node[loss, fill=cyan!10, draw=cyan!40!black] at (1.5,-1.65)
+    {$\mathcal{L}_\text{mse}=\|\tilde{\mathbf{r}}_d-\tilde{\mathbf{e}}_i\|^2$};
+  \node[loss, fill=cyan!10, draw=cyan!40!black] at (1.5,-2.55)
+    {$\lambda_\text{kl}\,T^2\,\mathrm{KL}(p_i^\dagger \| p_d)$};
+  \node[font=\scriptsize, align=center] at (1.5,-3.3)
+    {Unfreezes $h_i$, $\phi_\xi$; both paths\\jointly supervised};
+\end{scope}
+
+% --- Shared total loss label ------------------------------------
+\node[font=\scriptsize, align=left, text=gray] at (-1.3,-19.8) {
+  $^\dagger$ IMU logits detached for KL term (depth is student)
+};
+
+% =====================================================================
+% INFERENCE PATH
+% =====================================================================
+\node[box, fill=gray!10, draw=gray!50, minimum width=11.0cm,
+      font=\small] (infer) at (3.75,-20.5)
+  {$\hat{y}=\arg\max\; c_\omega\!\left(
+      \phi_\xi\!\left(h_d\!\left(f_\theta\!\left(
+      \tilde{\mathbf{X}}_d^{(s)}\right)\right)\right)\right)$\quad
+   \textbf{Depth-only inference} (IMU branch discarded)};
+
+% =====================================================================
+% LEGEND
+% =====================================================================
+\begin{scope}[shift={(9.0,-13.2)}]
+  \node[trainable, minimum width=1.6cm, minimum height=0.4cm, font=\scriptsize]
+    at (0, 0) {Trainable};
+  \node[frozen,    minimum width=1.6cm, minimum height=0.4cm, font=\scriptsize]
+    at (0,-0.7) {Frozen};
+  \node[shared,    minimum width=1.6cm, minimum height=0.4cm, font=\scriptsize]
+    at (0,-1.4) {Shared weights};
+  \node[loss,      minimum width=1.6cm, minimum height=0.4cm, font=\scriptsize]
+    at (0,-2.1) {Loss term};
+  \draw[arrow, orange!70!black] (-0.9,-2.9)--(-0.3,-2.9)
+    node[right, font=\scriptsize]{Grad.\ flows};
+  \draw[darrow] (-0.9,-3.5)--(-0.3,-3.5)
+    node[right, font=\scriptsize]{No gradient};
 \end{scope}
 
 \end{tikzpicture}
 \caption{
-  \textbf{Cross-modal depth-IMU training pipeline.}
-  \textit{Training} (full diagram): depth DINOv2 frame embeddings are
-  processed by a trainable TCN encoder and projected to a shared space via
-  per-modality input projections.  A frozen LIMU-BERT teacher processes
-  co-registered wrist accelerometer FLIRT features and maps its representation
-  through the \emph{same} shared MLP weights.  Three losses shape the shared
-  space: classification ($\mathcal{L}_\text{cls}$), cosine alignment
-  ($\mathcal{L}_\text{align}$), and optional IMU reconstruction
-  ($\mathcal{L}_\text{recon}$).
-  \textit{Inference} (bottom): only the depth path is executed.
-  The IMU branch is discarded entirely.
-  Subject-normalised embeddings $\tilde{\mathbf{X}}_d^{(s)}$ reduce
-  inter-participant distributional shift without requiring labels.
+  \textbf{Cross-modal depth-IMU training pipeline and alignment variants.}
+  \textit{Top}: The shared backbone processes depth DINOv2 frame embeddings
+  through a warm-started TCN encoder and per-modality input projections into a
+  shared MLP (identical weights for both modalities).
+  The frozen LIMU-BERT teacher contributes IMU embeddings during training only.
+  \textit{Middle}: Four alignment variants attach to different points of the
+  shared backbone.
+  \textbf{V1} (cosine) applies a point-wise geometric constraint between
+  $\mathbf{z}_d$ and $\mathbf{z}_i$.
+  \textbf{V2} (GRL) uses an adversarial discriminator with gradient
+  reversal to enforce distributional alignment.
+  \textbf{V3} (KL) aligns the stress prediction distributions of both
+  paths in the shared classification space.
+  \textbf{V4} (joint) additionally unfreezes the IMU projection path,
+  adds MSE on pre-shared representations, and provides the IMU path its
+  own classification loss.
+  \textit{Bottom}: At inference, all variants reduce to an identical
+  depth-only forward pass with subject-normalised inputs.
 }
 \label{fig:pipeline}
 \end{figure*}
@@ -401,58 +454,65 @@ folds.  AUC is our primary metric as it is threshold-free.
 \subsection{Results}
 \label{sec:results}
 
-Table~\ref{tab:results} compares the cross-modal model against standalone
+Table~\ref{tab:results} compares all cross-modal variants against standalone
 depth and IMU baselines under the same participant-disjoint evaluation
 protocol (5-fold GroupKFold, thresholds swept on held-out validation BA).
+All cross-modal models use subject-normalised inference; the IMU branch is
+discarded at test time.
 
 \begin{table}[h]
 \centering
 \caption{Test-set performance (mean $\pm$ std across 5 participant-disjoint folds).
-All cross-modal models use subject-normalised inference; the IMU branch is
-discarded at test time.}
+BA = balanced accuracy, Sens.\ = sensitivity, Spec.\ = specificity.
+$\dagger$ = pending full 5-fold evaluation.
+Dash (--) indicates metric not available for that baseline.}
 \label{tab:results}
 \small
-\begin{tabular}{lccc}
+\begin{tabular}{lccccc}
 \toprule
-\textbf{Model} & \textbf{AUC} & \textbf{BA} & \textbf{MCC} \\
+\textbf{Model} & \textbf{AUC} & \textbf{BA} & \textbf{Sens.} & \textbf{Spec.} & \textbf{MCC} \\
 \midrule
-\multicolumn{4}{l}{\textit{IMU baselines (upper bound, requires wearable)}} \\
-FLIRT-LSTM + Attention        & 0.890 & 0.822 & -- \\
-FLIRT-LIMU-BERT               & 0.863 & 0.784 & -- \\
+\multicolumn{6}{l}{\textit{IMU baselines (upper bound, requires wearable)}} \\
+FLIRT-LSTM        & 0.890 & 0.822 & -- & -- & -- \\
+FLIRT-LIMU-BERT   & 0.863 & 0.784 & -- & -- & -- \\
 \midrule
-\multicolumn{4}{l}{\textit{Depth-only baselines (no wearable at inference)}} \\
-DINOv2-TCN, pop.\ norm        & 0.638\,$\pm$\,0.054 & 0.587\,$\pm$\,0.032 & 0.173\,$\pm$\,0.069 \\
-DINOv2-TCN, subj.\ norm       & \textbf{0.717}\,$\pm$\,0.037 & 0.636\,$\pm$\,0.011 & 0.262\,$\pm$\,0.050 \\
+\multicolumn{6}{l}{\textit{Depth-only (no wearable at inference)}} \\
+Pop.\ norm  & 0.638\,$\pm$\,0.054 & 0.587\,$\pm$\,0.032
+            & -- & -- & 0.173\,$\pm$\,0.069 \\
+Subj.\ norm & \textbf{0.717}\,$\pm$\,0.037 & 0.636\,$\pm$\,0.011
+            & -- & -- & 0.262\,$\pm$\,0.050 \\
 \midrule
-\multicolumn{4}{l}{\textit{Cross-modal (IMU guidance, depth-only inference)}} \\
-+ cosine alignment            & 0.702\,$\pm$\,0.071 & \textbf{0.643}\,$\pm$\,0.050 & \textbf{0.249}\,$\pm$\,0.084 \\
-+ GRL adversarial alignment   & 0.688\,$\pm$\,0.029 & \textbf{0.643}\,$\pm$\,0.036 & 0.250\,$\pm$\,0.053 \\
+\multicolumn{6}{l}{\textit{Cross-modal (IMU guidance, depth-only inference)}} \\
+V1: Cosine
+  & 0.702\,$\pm$\,0.071 & \textbf{0.643}\,$\pm$\,0.050
+  & 0.696\,$\pm$\,0.079 & 0.590\,$\pm$\,0.129 & 0.249\,$\pm$\,0.084 \\
+V2: GRL
+  & 0.688\,$\pm$\,0.029 & \textbf{0.643}\,$\pm$\,0.036
+  & 0.669\,$\pm$\,0.130 & 0.617\,$\pm$\,0.193 & 0.250\,$\pm$\,0.053 \\
+V3: KL logits$^\dagger$ & -- & -- & -- & -- & -- \\
+V4: Joint$^\dagger$     & -- & -- & -- & -- & -- \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Both cross-modal variants improve substantially over the population-normalised
-depth baseline ($\text{AUC}=0.638$), reaching $0.702$ and $0.688$ respectively,
-a gain of $+10.0\%$ and $+7.8\%$.
-Neither variant surpasses the subject-normalised depth baseline
-($\text{AUC}=0.717$), indicating that per-participant distributional
-correction remains the dominant factor in this dataset.
+Both evaluated cross-modal variants (V1, V2) improve over the
+population-normalised depth baseline ($\text{AUC}=0.638$) by $+10.0\%$
+and $+7.8\%$ respectively, while neither yet surpasses the subject-normalised
+depth baseline ($\text{AUC}=0.717$).
 
-The two alignment objectives produce a notable trade-off.
-Cosine alignment achieves higher mean AUC ($0.702$ vs $0.688$) but with
-substantially higher variance ($\pm 0.071$ vs $\pm 0.029$), suggesting the
-rigid vector-level constraint is sensitive to fold composition.
-The GRL variant produces a more calibrated classifier---sensitivity and
-specificity are $0.669$/$0.617$ vs $0.696$/$0.590$---consistent with the
-adversarial objective encouraging distributional rather than point-wise
-alignment.
-Both achieve nearly identical balanced accuracy ($0.643$) and MCC (${\approx}0.250$).
+The two completed variants reveal a key trade-off.  Cosine alignment (V1)
+achieves higher mean AUC ($0.702$) but with substantially higher variance
+($\pm0.071$ vs.\ $\pm0.029$), indicating sensitivity to fold-specific subject
+composition.  The GRL variant (V2) produces more balanced sensitivity/specificity
+($0.669$\,/\,$0.617$ vs.\ $0.696$\,/\,$0.590$ for V1), consistent with
+adversarial alignment encouraging distributional rather than point-wise matching.  Both variants
+achieve nearly identical balanced accuracy ($0.643$) and MCC ($\approx 0.250$).
 
-These results suggest that embedding-space alignment alone, whether
-cosine-based or adversarial, transfers stress-relevant structure from the IMU
-teacher but cannot replicate the inter-subject normalisation effect.
-A promising direction is knowledge distillation on the teacher's output
-logits (soft stress labels), which directly supervises the stress-discriminative
-subspace rather than the full embedding distribution.
+The two pending variants address the core limitation identified in V1 and V2:
+embedding-space alignment does not directly supervise the stress-discriminative
+subspace.  V3 closes this gap by aligning \emph{classification distributions}
+rather than embedding vectors.  V4 further removes the asymmetry by jointly
+training the IMU projection path, providing the teacher-side representations
+their own supervised signal before they serve as alignment targets.
 
 \end{document}
