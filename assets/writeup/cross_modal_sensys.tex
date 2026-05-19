@@ -407,7 +407,9 @@ protocol (5-fold GroupKFold, thresholds swept on held-out validation BA).
 
 \begin{table}[h]
 \centering
-\caption{Test-set performance (mean $\pm$ std across 5 participant-disjoint folds).}
+\caption{Test-set performance (mean $\pm$ std across 5 participant-disjoint folds).
+All cross-modal models use subject-normalised inference; the IMU branch is
+discarded at test time.}
 \label{tab:results}
 \small
 \begin{tabular}{lccc}
@@ -420,33 +422,37 @@ FLIRT-LIMU-BERT               & 0.863 & 0.784 & -- \\
 \midrule
 \multicolumn{4}{l}{\textit{Depth-only baselines (no wearable at inference)}} \\
 DINOv2-TCN, pop.\ norm        & 0.638\,$\pm$\,0.054 & 0.587\,$\pm$\,0.032 & 0.173\,$\pm$\,0.069 \\
-DINOv2-TCN, subj.\ norm       & 0.717\,$\pm$\,0.037 & 0.636\,$\pm$\,0.011 & 0.262\,$\pm$\,0.050 \\
+DINOv2-TCN, subj.\ norm       & \textbf{0.717}\,$\pm$\,0.037 & 0.636\,$\pm$\,0.011 & 0.262\,$\pm$\,0.050 \\
 \midrule
 \multicolumn{4}{l}{\textit{Cross-modal (IMU guidance, depth-only inference)}} \\
-DINOv2-TCN + LIMU-BERT        & 0.697\,$\pm$\,0.047
-                               & 0.645\,$\pm$\,0.033
-                               & 0.247\,$\pm$\,0.058 \\
++ cosine alignment            & 0.702\,$\pm$\,0.071 & \textbf{0.643}\,$\pm$\,0.050 & \textbf{0.249}\,$\pm$\,0.084 \\
++ GRL adversarial alignment   & 0.688\,$\pm$\,0.029 & \textbf{0.643}\,$\pm$\,0.036 & 0.250\,$\pm$\,0.053 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The full 5-fold cross-modal model achieves $\text{AUC}=0.697 \pm 0.047$,
-a $+0.059$ improvement over the population-normalised depth baseline ($0.638$)
-but $-0.020$ below the subject-normalised baseline ($0.717$).
-Balanced accuracy similarly improves from $0.587$ (pop.\ norm) to $0.645$,
-and MCC from $0.173$ to $0.247$, while sensitivity ($0.654$) and specificity
-($0.636$) are well-balanced, indicating the alignment objective successfully
-suppresses class-specific bias.
+Both cross-modal variants improve substantially over the population-normalised
+depth baseline ($\text{AUC}=0.638$), reaching $0.702$ and $0.688$ respectively,
+a gain of $+10.0\%$ and $+7.8\%$.
+Neither variant surpasses the subject-normalised depth baseline
+($\text{AUC}=0.717$), indicating that per-participant distributional
+correction remains the dominant factor in this dataset.
 
-These results indicate that cross-modal training with a frozen IMU teacher
-transfers complementary stress-discriminative structure into the depth encoder,
-yielding a $+9.2\%$ AUC gain over the unadapted depth baseline.
-However, the cross-modal model does not yet close the gap to the
-subject-normalised depth baseline, suggesting that the alignment loss alone
-is insufficient to replicate the per-participant distributional correction
-applied at subject-norm inference time.
-A natural extension is to combine cross-modal training with subject
-normalisation at inference, which we expect to recover and surpass the
-$0.717$ ceiling.
+The two alignment objectives produce a notable trade-off.
+Cosine alignment achieves higher mean AUC ($0.702$ vs $0.688$) but with
+substantially higher variance ($\pm 0.071$ vs $\pm 0.029$), suggesting the
+rigid vector-level constraint is sensitive to fold composition.
+The GRL variant produces a more calibrated classifier---sensitivity and
+specificity are $0.669$/$0.617$ vs $0.696$/$0.590$---consistent with the
+adversarial objective encouraging distributional rather than point-wise
+alignment.
+Both achieve nearly identical balanced accuracy ($0.643$) and MCC (${\approx}0.250$).
+
+These results suggest that embedding-space alignment alone, whether
+cosine-based or adversarial, transfers stress-relevant structure from the IMU
+teacher but cannot replicate the inter-subject normalisation effect.
+A promising direction is knowledge distillation on the teacher's output
+logits (soft stress labels), which directly supervises the stress-discriminative
+subspace rather than the full embedding distribution.
 
 \end{document}
