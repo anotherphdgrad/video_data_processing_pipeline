@@ -386,7 +386,9 @@ def train_one_fold(
             ], dim=0)
             loss_domain = F.cross_entropy(discriminator(z_all), domain_labels)
 
-            loss = loss_cls + current_lambda * loss_domain
+            # grl.alpha already scales the reversed gradient by current_lambda.
+            # Do NOT multiply loss_domain here — that would square the scaling.
+            loss = loss_cls + loss_domain
 
             optimizer.zero_grad()
             loss.backward()
@@ -509,6 +511,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-folds", type=int, default=None)
     p.add_argument("--device", choices=["cuda", "cpu"], default=None)
     p.add_argument("--no-progress", action="store_true")
+    p.add_argument("--best-params-json", default=None,
+                   help="Path to best_params.json from a previous run. Skips Optuna.")
     args = p.parse_args()
     if args.config:
         from config_utils import load_config, apply_config, teacher_embeddings_dir
@@ -589,93 +593,106 @@ def main() -> None:
     (output_root / "config.json").write_text(json.dumps(config, indent=2, default=str))
 
     # ---------------------------------------------------------------------------
-    # Optuna tuning on tune_fold_id
+    # Optuna tuning — skipped if --best-params-json provided
     # ---------------------------------------------------------------------------
-    print(f"\nOptuna: tuning on fold {args.tune_fold_id} with {args.optuna_trials} trials...")
-    tune_fold = next((f for f in folds if f["fold_id"] == args.tune_fold_id), folds[0])
-    tune_ckpt = depth_ckpt_dir / f"fold_{tune_fold['fold_id']}.pt"
-    if not tune_ckpt.exists():
-        raise SystemExit(f"Depth checkpoint not found: {tune_ckpt}")
-
-    print("Computing FM normalization stats from train fold...")
-    fm_mean, fm_std = dataset.compute_fm_normalizer(tune_fold["train"].tolist())
-
-    tune_fold_id = tune_fold["fold_id"]
-    if per_fold_teacher:
-        _npz_path = per_fold_teacher.get(tune_fold_id, list(per_fold_teacher.values())[0])
-        _npz = np.load(str(_npz_path))
-        tune_teacher_embeddings = _npz["embeddings"]
-        tune_pair_index_to_pos = {int(pi): pos for pos, pi in enumerate(_npz["pair_indices"])}
+    if args.best_params_json:
+        with open(args.best_params_json) as f:
+            best_params = json.load(f)
+        print(f"\nSkipping Optuna — loaded best params from {args.best_params_json}")
+        print(f"Params: {best_params}")
+        with open(output_root / "best_params.json", "w") as f:
+            json.dump(best_params, f, indent=2)
+        # Jump straight to fold evaluation
+        _skip_optuna = True
     else:
-        tune_teacher_embeddings = teacher_embeddings
-        tune_pair_index_to_pos = pair_index_to_pos
+        _skip_optuna = False
 
-    def make_split_dataset(fold_indices):
-        return PairedWithTeacher(
-            dataset, tune_teacher_embeddings, tune_pair_index_to_pos,
-            fold_indices, fm_mean, fm_std,
-        )
+    if not _skip_optuna:
+        print(f"\nOptuna: tuning on fold {args.tune_fold_id} with {args.optuna_trials} trials...")
+        tune_fold = next((f for f in folds if f["fold_id"] == args.tune_fold_id), folds[0])
+        tune_ckpt = depth_ckpt_dir / f"fold_{tune_fold['fold_id']}.pt"
+        if not tune_ckpt.exists():
+            raise SystemExit(f"Depth checkpoint not found: {tune_ckpt}")
 
-    def objective(trial: optuna.Trial) -> float:
-        params = sample_params(trial)
-        shared_dim = int(params["shared_dim"])
-        encoder, _ = load_depth_tcn_encoder(tune_ckpt, device=device)
-        model = CrossModalDepthModel(
-            encoder=encoder,
-            shared_dim=shared_dim,
-            imu_dim=imu_dim,
-            dropout=float(params["proj_dropout"]),
-            use_decoder=False,   # GRL variant never uses the decoder
-        ).to(device)
-        disc = ModalityDiscriminator(shared_dim, dropout=float(params["proj_dropout"])).to(device)
-        grl = GradientReversalLayer(alpha=1.0)
+        print("Computing FM normalization stats from train fold...")
+        fm_mean, fm_std = dataset.compute_fm_normalizer(tune_fold["train"].tolist())
 
-        train_ds = make_split_dataset(tune_fold["train"])
-        val_ds   = make_split_dataset(tune_fold["val"])
-        train_labels = np.array([p.label for p in train_ds.pairs])
-        sampler = weighted_sampler(train_labels)
-        train_loader = DataLoader(train_ds, batch_size=int(params["batch_size"]), sampler=sampler)
-        train_eval_loader = DataLoader(train_ds, batch_size=int(params["batch_size"]), shuffle=False)
-        val_loader = DataLoader(val_ds, batch_size=int(params["batch_size"]), shuffle=False)
+        tune_fold_id = tune_fold["fold_id"]
+        if per_fold_teacher:
+            _npz_path = per_fold_teacher.get(tune_fold_id, list(per_fold_teacher.values())[0])
+            _npz = np.load(str(_npz_path))
+            tune_teacher_embeddings = _npz["embeddings"]
+            tune_pair_index_to_pos = {int(pi): pos for pos, pi in enumerate(_npz["pair_indices"])}
+        else:
+            tune_teacher_embeddings = teacher_embeddings
+            tune_pair_index_to_pos = pair_index_to_pos
 
-        try:
-            metric_rows, _ = train_one_fold(
-                model=model,
-                discriminator=disc,
-                grl=grl,
-                train_loader=train_loader,
-                train_eval_loader=train_eval_loader,
-                val_loader=val_loader,
-                test_loader=val_loader,
-                params=params,
-                device=device,
-                fold_id=tune_fold["fold_id"],
-                output_dir=None,
-                random_seed=args.random_seed,
-                paired_dataset=dataset,
-                val_pair_indices=tune_fold["val"],
-                test_pair_indices=tune_fold["val"],
-                pop_mean=fm_mean,
-                pop_std=fm_std,
+        def make_split_dataset(fold_indices):
+            return PairedWithTeacher(
+                dataset, tune_teacher_embeddings, tune_pair_index_to_pos,
+                fold_indices, fm_mean, fm_std,
             )
-            val_ba = next((r["balanced_accuracy"] for r in metric_rows if r["split"] == "val"), 0.0)
-            return float(val_ba)
-        except Exception as e:
-            import traceback
-            print(f"\n  [Optuna trial {trial.number}] FAILED: {e}")
-            traceback.print_exc()
-            return 0.0
 
-    study = optuna.create_study(
-        direction="maximize",
-        pruner=optuna.pruners.MedianPruner(n_warmup_steps=3),
-    )
-    study.optimize(objective, n_trials=args.optuna_trials, show_progress_bar=not args.no_progress)
-    best_params = study.best_trial.params
-    print(f"Best val BA: {study.best_trial.value:.4f}")
-    print(f"Best params: {best_params}")
-    with open(output_root / "best_params.json", "w") as f:
-        json.dump(best_params, f, indent=2)
+        def objective(trial: optuna.Trial) -> float:
+            params = sample_params(trial)
+            shared_dim = int(params["shared_dim"])
+            encoder, _ = load_depth_tcn_encoder(tune_ckpt, device=device)
+            model = CrossModalDepthModel(
+                encoder=encoder,
+                shared_dim=shared_dim,
+                imu_dim=imu_dim,
+                dropout=float(params["proj_dropout"]),
+                use_decoder=False,
+            ).to(device)
+            disc = ModalityDiscriminator(shared_dim, dropout=float(params["proj_dropout"])).to(device)
+            grl = GradientReversalLayer(alpha=1.0)
+
+            train_ds = make_split_dataset(tune_fold["train"])
+            val_ds   = make_split_dataset(tune_fold["val"])
+            train_labels = np.array([p.label for p in train_ds.pairs])
+            sampler = weighted_sampler(train_labels)
+            train_loader = DataLoader(train_ds, batch_size=int(params["batch_size"]), sampler=sampler)
+            train_eval_loader = DataLoader(train_ds, batch_size=int(params["batch_size"]), shuffle=False)
+            val_loader = DataLoader(val_ds, batch_size=int(params["batch_size"]), shuffle=False)
+
+            try:
+                metric_rows, _ = train_one_fold(
+                    model=model,
+                    discriminator=disc,
+                    grl=grl,
+                    train_loader=train_loader,
+                    train_eval_loader=train_eval_loader,
+                    val_loader=val_loader,
+                    test_loader=val_loader,
+                    params=params,
+                    device=device,
+                    fold_id=tune_fold["fold_id"],
+                    output_dir=None,
+                    random_seed=args.random_seed,
+                    paired_dataset=dataset,
+                    val_pair_indices=tune_fold["val"],
+                    test_pair_indices=tune_fold["val"],
+                    pop_mean=fm_mean,
+                    pop_std=fm_std,
+                )
+                val_ba = next((r["balanced_accuracy"] for r in metric_rows if r["split"] == "val"), 0.0)
+                return float(val_ba)
+            except Exception as e:
+                import traceback
+                print(f"\n  [Optuna trial {trial.number}] FAILED: {e}")
+                traceback.print_exc()
+                return 0.0
+
+        study = optuna.create_study(
+            direction="maximize",
+            pruner=optuna.pruners.MedianPruner(n_warmup_steps=3),
+        )
+        study.optimize(objective, n_trials=args.optuna_trials, show_progress_bar=not args.no_progress)
+        best_params = study.best_trial.params
+        print(f"Best val BA: {study.best_trial.value:.4f}")
+        print(f"Best params: {best_params}")
+        with open(output_root / "best_params.json", "w") as f:
+            json.dump(best_params, f, indent=2)
 
     # ---------------------------------------------------------------------------
     # Evaluate on all folds with best params
