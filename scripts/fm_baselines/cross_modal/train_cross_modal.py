@@ -563,9 +563,20 @@ def main() -> None:
     print("Computing FM normalization stats from train fold...")
     fm_mean, fm_std = dataset.compute_fm_normalizer(train_pair_indices)
 
+    # Resolve teacher embeddings for the tuning fold now (before the closure)
+    tune_fold_id = tune_fold["fold_id"]
+    if per_fold_teacher:
+        _npz_path = per_fold_teacher.get(tune_fold_id, list(per_fold_teacher.values())[0])
+        _npz = np.load(str(_npz_path))
+        tune_teacher_embeddings = _npz["embeddings"]
+        tune_pair_index_to_pos = {int(pi): pos for pos, pi in enumerate(_npz["pair_indices"])}
+    else:
+        tune_teacher_embeddings = teacher_embeddings
+        tune_pair_index_to_pos = pair_index_to_pos
+
     def make_split_dataset(fold_indices):
         return PairedWithTeacher(
-            dataset, teacher_embeddings, pair_index_to_pos,
+            dataset, tune_teacher_embeddings, tune_pair_index_to_pos,
             fold_indices, fm_mean, fm_std
         )
 
