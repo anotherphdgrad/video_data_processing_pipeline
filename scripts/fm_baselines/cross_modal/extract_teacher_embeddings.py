@@ -146,7 +146,6 @@ def _extract_limu_bert(
 def _extract_flirt_lstm(
     teacher,
     dataset: PairedDepthIMUDataset,
-    imu_data_root: str,
     seq_len: int,
     batch_size: int,
     device: str,
