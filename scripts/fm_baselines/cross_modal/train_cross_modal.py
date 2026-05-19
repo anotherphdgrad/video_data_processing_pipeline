@@ -608,7 +608,10 @@ def main() -> None:
             )
             val_ba = next((r["balanced_accuracy"] for r in metric_rows if r["split"] == "val"), 0.0)
             return float(val_ba)
-        except Exception:
+        except Exception as e:
+            import traceback
+            print(f"\n  [Optuna trial {trial.number}] FAILED: {e}")
+            traceback.print_exc()
             return 0.0
 
     study = optuna.create_study(direction="maximize", pruner=optuna.pruners.MedianPruner(n_warmup_steps=3))
