@@ -43,17 +43,18 @@ from depth_models import DepthTCNEncoder
 # Shared projection MLP
 # ---------------------------------------------------------------------------
 
-class SharedProjectionMLP(nn.Module):
+class SharedProcessingMLP(nn.Module):
     """
-    Single-hidden-layer MLP that projects any D_in → D_shared.
-    Same weights used for both depth and IMU modalities.
+    Shared MLP that operates on already-projected shared_dim inputs.
+    Same weights applied to both depth and IMU representations.
+    Input must already be in shared_dim — use per-modality input projections
+    (in CrossModalDepthModel) to bring each modality to this dimension first.
     """
 
-    def __init__(self, input_dim: int, shared_dim: int, dropout: float = 0.1) -> None:
+    def __init__(self, shared_dim: int, dropout: float = 0.1) -> None:
         super().__init__()
         self.net = nn.Sequential(
-            nn.LayerNorm(input_dim),
-            nn.Linear(input_dim, shared_dim),
+            nn.LayerNorm(shared_dim),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(shared_dim, shared_dim),
@@ -131,7 +132,12 @@ class CrossModalDepthModel(nn.Module):
     ) -> None:
         super().__init__()
         self.encoder = encoder
-        self.shared_proj = SharedProjectionMLP(encoder.repr_dim, shared_dim, dropout)
+        # Per-modality input projections: bring each to shared_dim
+        # (dims differ: depth=encoder.repr_dim, imu=72)
+        self.depth_in_proj = nn.Linear(encoder.repr_dim, shared_dim)
+        self.imu_in_proj = nn.Linear(imu_dim, shared_dim)
+        # Shared MLP — same weights applied to both modalities after projection
+        self.shared_mlp = SharedProcessingMLP(shared_dim, dropout)
         self.classifier = StressClassifier(shared_dim, dropout)
         self.decoder = IMUDecoder(shared_dim, imu_dim, dropout) if use_decoder else None
         self.shared_dim = shared_dim
@@ -140,11 +146,11 @@ class CrossModalDepthModel(nn.Module):
     def encode_depth(self, depth_x: torch.Tensor) -> torch.Tensor:
         """depth_x: (B, T, D) → z_depth: (B, shared_dim)"""
         depth_repr = self.encoder(depth_x)
-        return self.shared_proj(depth_repr)
+        return self.shared_mlp(self.depth_in_proj(depth_repr))
 
     def encode_imu(self, imu_embed: torch.Tensor) -> torch.Tensor:
         """imu_embed: (B, imu_dim) → z_imu: (B, shared_dim)"""
-        return self.shared_proj(imu_embed)
+        return self.shared_mlp(self.imu_in_proj(imu_embed))
 
     def forward(
         self,
